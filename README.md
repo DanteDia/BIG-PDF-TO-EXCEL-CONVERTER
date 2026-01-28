@@ -2,6 +2,8 @@
 
 Herramienta automatizada para convertir informes de resumen impositivo en formato PDF a archivos Excel estructurados.
 
+**🌐 [Pruébalo online aquí](https://big-pdf-to-excel-converter.streamlit.app)** (sin instalación requerida)
+
 ## 🚀 Características
 
 - **Conversión automática**: Procesa PDFs de Datalab y genera Excel con múltiples hojas
@@ -53,7 +55,20 @@ export DATALAB_API_KEY="tu_api_key_aqui"
 
 ## 🎯 Uso
 
-### Interfaz Web (Recomendado)
+### 🌐 Online (Sin Instalación)
+
+La forma más fácil: **[Abre la app aquí](https://big-pdf-to-excel-converter.streamlit.app)**
+
+1. Sube tu PDF de resumen impositivo
+2. Selecciona modo "accurate" para mejor OCR
+3. Espera procesamiento (1-2 minutos)
+4. Descarga tu Excel
+
+Ver [STREAMLIT_DEPLOYMENT.md](STREAMLIT_DEPLOYMENT.md) para más detalles.
+
+### 💻 Localmente (Instalación Requerida)
+
+#### Interfaz Web (Recomendado)
 
 ```bash
 streamlit run export_validation\app_datalab.py
@@ -67,7 +82,7 @@ Luego abre tu navegador en `http://localhost:8501`
 3. Espera el procesamiento
 4. Descarga el Excel generado
 
-### Línea de Comandos
+#### Línea de Comandos
 
 ```python
 from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
