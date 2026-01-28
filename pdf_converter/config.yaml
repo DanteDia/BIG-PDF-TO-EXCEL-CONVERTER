@@ -1,0 +1,26 @@
+# PDF to Excel Converter Configuration
+
+validation:
+  tolerance: 0.01              # Maximum acceptable difference for validation
+  decimal_fix_ratio_min: 95    # Minimum ratio to detect x100 error
+  decimal_fix_ratio_max: 105   # Maximum ratio to detect x100 error
+
+excel:
+  rounding_decimals: 2
+  date_format: "dd/mm/yyyy"
+
+extraction:
+  max_pages_per_chunk: 5       # Process 5 pages at a time
+  max_tokens_input: 80000      # Conservative input limit
+  max_tokens_output: 16000     # Conservative output limit
+  overlap_pages: 1             # 1-page overlap for continuity
+  max_retries: 3
+  temperature: 0.0             # Deterministic extraction
+
+llm:
+  model: "claude-sonnet-4-20250514"
+  fallback_model: "gpt-4o"
+
+ui:
+  show_preview: true
+  max_preview_rows: 100
