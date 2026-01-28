@@ -22,18 +22,11 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / "pdf_converter" / ".env")
 
 # Import authentication
-from pdf_converter.datalab.auth import check_authentication, initialize_authenticator, login_page, logout_button
+from pdf_converter.datalab.auth import require_login, logout_button
 
 # ==================== AUTENTICACIÓN ====================
-# Verificar si usuario está autenticado
-if not check_authentication():
-    try:
-        authenticator = initialize_authenticator()
-        login_page(authenticator)
-        st.stop()
-    except Exception as e:
-        st.error(f"Error de autenticación: {e}")
-        st.stop()
+# Requiere login antes de mostrar la app
+require_login()
 
 # ==================== APP PRINCIPAL ====================
 

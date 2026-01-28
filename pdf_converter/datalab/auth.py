@@ -1,52 +1,29 @@
 """
-Módulo de autenticación para la app Streamlit
-Maneja login y acceso de usuarios autorizados
+Módulo de autenticación simple para la app Streamlit
+Maneja login y acceso de usuarios autorizados (sin streamlit-authenticator)
 """
 
 import streamlit as st
-import streamlit_authenticator as stauth
-import yaml
-import os
-from pathlib import Path
+import bcrypt
 
 def load_credentials():
     """Carga las credenciales desde secrets.toml"""
     try:
-        # En Streamlit Cloud, lee desde st.secrets
-        credentials = st.secrets.get("credentials", {})
-        if credentials:
-            return credentials
-        
-        # En local, intenta cargar desde archivo YAML
-        config_path = Path(".streamlit/auth_config.yaml")
-        if config_path.exists():
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-                return config.get("credentials", {})
+        if "credentials" in st.secrets and "usernames" in st.secrets["credentials"]:
+            return st.secrets["credentials"]["usernames"]
     except Exception as e:
         st.error(f"Error cargando credenciales: {e}")
     
-    return {}
+    return None
 
-def initialize_authenticator():
-    """Inicializa el autenticador de Streamlit"""
-    credentials = load_credentials()
-    
-    if not credentials:
-        st.error("❌ No se encontraron credenciales configuradas")
-        st.stop()
-    
-    authenticator = stauth.Authenticate(
-        credentials,
-        "big_pdf_converter",  # cookie name
-        "your_secret_key_here",  # cookie key (cambiar en producción)
-        cookie_expiry_days=30,
-        preauthorized=[]
-    )
-    
-    return authenticator
+def verify_password(password, hashed_password):
+    """Verifica si la contraseña coincide con el hash bcrypt"""
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except Exception:
+        return False
 
-def login_page(authenticator):
+def login_page():
     """Muestra la página de login"""
     col1, col2, col3 = st.columns([1, 2, 1])
     
@@ -59,34 +36,45 @@ def login_page(authenticator):
         """)
         st.markdown("---")
         
-        # Mostrar autenticador
-        try:
-            name, authentication_status, username = authenticator.login("main")
-            
-            if authentication_status:
-                st.session_state.authenticated = True
-                st.session_state.username = name
-                st.success(f"✅ ¡Bienvenido {name}!")
-                st.balloons()
-                st.rerun()
-                
-            elif authentication_status is False:
-                st.error("❌ Usuario o contraseña incorrectos")
-                
-            elif authentication_status is None:
-                st.warning("⚠️ Por favor ingresa tu usuario y contraseña")
-                
-                # Información de ayuda
-                st.markdown("---")
-                st.markdown("""
-                **¿Necesitas ayuda?**
-                - Contacta al administrador para obtener tus credenciales
-                - Asegúrate de escribir correctamente el usuario y contraseña
-                """)
-                
-        except Exception as e:
-            st.error(f"Error en autenticación: {e}")
+        # Cargar credenciales
+        credentials = load_credentials()
+        
+        if not credentials:
+            st.error("❌ No se encontraron credenciales configuradas")
             st.stop()
+        
+        # Formulario de login
+        with st.form("login_form"):
+            username = st.text_input("👤 Usuario")
+            password = st.text_input("🔐 Contraseña", type="password")
+            submit = st.form_submit_button("Iniciar Sesión", use_container_width=True)
+            
+            if submit:
+                # Verificar si el usuario existe
+                if username in credentials:
+                    user_data = credentials[username]
+                    stored_password = user_data["password"]
+                    
+                    # Verificar contraseña
+                    if verify_password(password, stored_password):
+                        st.session_state.authenticated = True
+                        st.session_state.username = user_data["name"]
+                        st.session_state.user_email = user_data["email"]
+                        st.success(f"✅ ¡Bienvenido {user_data['name']}!")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("❌ Usuario o contraseña incorrectos")
+                else:
+                    st.error("❌ Usuario o contraseña incorrectos")
+        
+        # Información de ayuda
+        st.markdown("---")
+        st.markdown("""
+        **¿Necesitas ayuda?**
+        - Contacta al administrador para obtener tus credenciales
+        - Asegúrate de escribir correctamente el usuario y contraseña
+        """)
 
 def check_authentication():
     """Verifica si el usuario está autenticado"""
@@ -98,24 +86,17 @@ def check_authentication():
 def require_login():
     """Requiere login para acceder a la app"""
     if not check_authentication():
-        authenticator = initialize_authenticator()
-        login_page(authenticator)
+        login_page()
         st.stop()
 
-def logout_button(authenticator):
+def logout_button():
     """Muestra botón de logout en la sidebar"""
     with st.sidebar:
         st.markdown("---")
-        col1, col2 = st.columns(2)
+        st.write(f"👤 {st.session_state.get('username', 'Usuario')}")
         
-        with col1:
-            st.write(f"👤 {st.session_state.get('username', 'Usuario')}")
-        
-        with col2:
-            try:
-                authenticator.logout("Logout")
-                if not st.session_state.get("login_widget", True):
-                    st.session_state.authenticated = False
-                    st.rerun()
-            except:
-                pass
+        if st.button("🚪 Cerrar Sesión"):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.session_state.user_email = None
+            st.rerun()
