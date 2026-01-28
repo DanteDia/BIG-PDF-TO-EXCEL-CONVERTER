@@ -39,6 +39,7 @@ TEST_*.xlsx
 # Environment variables
 .env
 .env.local
+.streamlit/secrets.toml
 
 # Logs
 *.log
