@@ -21,6 +21,22 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv(Path(__file__).parent.parent / "pdf_converter" / ".env")
 
+# Import authentication
+from pdf_converter.datalab.auth import check_authentication, initialize_authenticator, login_page, logout_button
+
+# ==================== AUTENTICACIÓN ====================
+# Verificar si usuario está autenticado
+if not check_authentication():
+    try:
+        authenticator = initialize_authenticator()
+        login_page(authenticator)
+        st.stop()
+    except Exception as e:
+        st.error(f"Error de autenticación: {e}")
+        st.stop()
+
+# ==================== APP PRINCIPAL ====================
+
 # Import our converter
 from pdf_converter.datalab import DatalabClient
 from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
@@ -33,6 +49,19 @@ st.set_page_config(
     page_icon="💼",
     layout="wide"
 )
+
+# ==================== SIDEBAR ====================
+with st.sidebar:
+    st.markdown("---")
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Obtener nombre del usuario autenticado
+        username = st.session_state.get('username', 'Usuario')
+        st.markdown(f"👤 **{username}**")
+    
+    # En producción, agregar botón de logout aquí
+    st.markdown("---")
 
 # Initialize session state
 if 'processed_files' not in st.session_state:
