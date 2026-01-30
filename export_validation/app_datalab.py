@@ -34,6 +34,7 @@ require_login()
 from pdf_converter.datalab import DatalabClient
 from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
 from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postprocess_visual_workbook
+from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 from openpyxl import load_workbook
 
 # Page config
@@ -335,6 +336,79 @@ if st.session_state.processed_files is not None:
                 key='download_visual'
             )
     
+    # ==================== MERGE GALLO + VISUAL ====================
+    # Only show merge option if both files are available
+    if 'gallo' in st.session_state.processed_files and 'visual' in st.session_state.processed_files:
+        st.markdown("---")
+        st.markdown("### 🔄 Generar Resumen Impositivo Anual")
+        st.markdown("""
+        <div class="info-box">
+            <p>Combina los datos de <strong>Gallo</strong> y <strong>Visual</strong> en un único Excel con:</p>
+            <ul>
+                <li>Boletos unificados y ordenados por especie</li>
+                <li>Resultado Ventas ARS/USD con running stock</li>
+                <li>Rentas y Dividendos consolidados</li>
+                <li>Resumen final con totales</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("📊 Generar Resumen Impositivo", type="secondary", use_container_width=True):
+            try:
+                with st.spinner("🔄 Generando resumen impositivo..."):
+                    # Create temp files for merge
+                    temp_dir = tempfile.mkdtemp()
+                    
+                    gallo_temp = os.path.join(temp_dir, "gallo.xlsx")
+                    visual_temp = os.path.join(temp_dir, "visual.xlsx")
+                    
+                    with open(gallo_temp, "wb") as f:
+                        f.write(st.session_state.processed_files['gallo'])
+                    with open(visual_temp, "wb") as f:
+                        f.write(st.session_state.processed_files['visual'])
+                    
+                    # Get aux_data path
+                    aux_data_dir = Path(__file__).parent.parent / "pdf_converter" / "datalab" / "aux_data"
+                    
+                    # Execute merge
+                    merger = GalloVisualMerger(gallo_temp, visual_temp, str(aux_data_dir))
+                    merged_wb = merger.merge()
+                    
+                    # Save to bytes
+                    output_buffer = io.BytesIO()
+                    merged_wb.save(output_buffer)
+                    output_buffer.seek(0)
+                    merged_data = output_buffer.read()
+                    
+                    # Store in session
+                    st.session_state.processed_files['merged'] = merged_data
+                    
+                    st.success("✅ Resumen impositivo generado exitosamente!")
+            except Exception as e:
+                st.error(f"❌ Error al generar resumen: {str(e)}")
+                st.exception(e)
+        
+        # Download merged file
+        if 'merged' in st.session_state.processed_files:
+            comitente_num = st.session_state.processed_files.get('gallo_comitente_num', '')
+            comitente_name = st.session_state.processed_files.get('gallo_comitente_name', '')
+            
+            if comitente_num and comitente_name:
+                clean_name = re.sub(r'[^\w\s]', '', comitente_name).strip().replace(' ', '_')[:30]
+                merged_filename = f"{comitente_num}_{clean_name}_Resumen_Impositivo_{timestamp}.xlsx"
+            else:
+                merged_filename = f"Resumen_Impositivo_{timestamp}.xlsx"
+            
+            st.download_button(
+                label="📥 Descargar Resumen Impositivo",
+                data=st.session_state.processed_files['merged'],
+                file_name=merged_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary",
+                key='download_merged'
+            )
+    
     # Preview
     st.markdown("### 👁️ Vista Previa")
     
@@ -343,11 +417,18 @@ if st.session_state.processed_files is not None:
         preview_options.append("Gallo")
     if 'visual' in st.session_state.processed_files:
         preview_options.append("Visual")
+    if 'merged' in st.session_state.processed_files:
+        preview_options.append("Resumen Impositivo")
     
     if preview_options:
         selected = st.selectbox("Seleccionar archivo para vista previa:", preview_options)
         
-        data_key = selected.lower()
+        # Map selection to data key
+        if selected == "Resumen Impositivo":
+            data_key = "merged"
+        else:
+            data_key = selected.lower()
+        
         xl = pd.ExcelFile(io.BytesIO(st.session_state.processed_files[data_key]))
         
         tabs = st.tabs(xl.sheet_names)
