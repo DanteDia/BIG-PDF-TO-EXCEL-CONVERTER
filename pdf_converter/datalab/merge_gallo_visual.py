@@ -125,13 +125,19 @@ class GalloVisualMerger:
                     fecha_key = fecha
                 self._cotizacion_cache[(fecha_key, tipo_dolar)] = cotizacion
         
-        # Cache Precios Iniciales: ticker -> precio
+        # Cache Precios Iniciales: ticker -> {codigo, precio}
+        # Col A = codigo, Col B = nombre, Col C = ticker/ORDEN, Col G = precio
         ws = self.precios_iniciales.active
         for row in range(2, ws.max_row + 1):
-            ticker = ws.cell(row, 1).value
+            codigo = ws.cell(row, 1).value  # Col A = codigo especie
+            ticker = ws.cell(row, 3).value  # Col C = ORDEN/ticker
             precio = ws.cell(row, 7).value  # Col G = precio
             if ticker:
-                self._precios_iniciales_cache[str(ticker).upper().strip()] = precio
+                ticker_key = str(ticker).upper().strip()
+                self._precios_iniciales_cache[ticker_key] = {
+                    'codigo': int(codigo) if codigo else None,
+                    'precio': precio if precio else 0
+                }
     
     def _clean_codigo(self, codigo) -> str:
         """Limpia código de especie: quita puntos, ceros a izquierda, etc."""
@@ -287,11 +293,37 @@ class GalloVisualMerger:
         
         return self._cotizacion_cache.get((fecha_key, tipo_key), 1.0)
     
+    def _generate_ticker_variations(self, ticker: str) -> List[str]:
+        """
+        Genera variaciones de ticker cambiando 0↔O para manejar errores de OCR.
+        Ej: TLC10 -> [TLC10, TLC1O], TL0C0 -> [TL0C0, TLOCO, TL0CO, TLOC0]
+        """
+        ticker_upper = str(ticker).upper().strip()
+        variations = [ticker_upper]
+        
+        # Encontrar posiciones de 0 y O
+        positions_0 = [i for i, c in enumerate(ticker_upper) if c == '0']
+        positions_O = [i for i, c in enumerate(ticker_upper) if c == 'O']
+        
+        # Si hay 0, generar versión con O
+        for pos in positions_0:
+            new_ticker = ticker_upper[:pos] + 'O' + ticker_upper[pos+1:]
+            if new_ticker not in variations:
+                variations.append(new_ticker)
+        
+        # Si hay O, generar versión con 0
+        for pos in positions_O:
+            new_ticker = ticker_upper[:pos] + '0' + ticker_upper[pos+1:]
+            if new_ticker not in variations:
+                variations.append(new_ticker)
+        
+        return variations
+    
     def _get_precio_inicial(self, ticker: str) -> float:
         """Obtiene precio inicial de una especie por ticker."""
         ticker_upper = str(ticker).upper().strip()
         
-        # Valores fijos
+        # Valores fijos para monedas
         if ticker_upper in ['PESOS', '$']:
             return 1.0
         if ticker_upper in ['DOLARES', 'USD', 'U$S', 'DOLAR']:
@@ -299,7 +331,44 @@ class GalloVisualMerger:
         if 'CABLE' in ticker_upper:
             return 1148.93
         
-        return self._precios_iniciales_cache.get(ticker_upper, 0)
+        # Primero probar ticker exacto
+        data = self._precios_iniciales_cache.get(ticker_upper, {})
+        if isinstance(data, dict) and data.get('precio'):
+            return data.get('precio', 0)
+        
+        # Si no encuentra, probar variaciones de ticker (OCR 0↔O)
+        for ticker_var in self._generate_ticker_variations(ticker_upper):
+            data = self._precios_iniciales_cache.get(ticker_var, {})
+            if isinstance(data, dict) and data.get('precio'):
+                return data.get('precio', 0)
+        
+        return 0
+    
+    def _get_codigo_from_ticker(self, ticker: str) -> Optional[int]:
+        """Obtiene código de especie desde el ticker usando PreciosInicialesEspecies."""
+        ticker_upper = str(ticker).upper().strip()
+        
+        # Las monedas no tienen código
+        if ticker_upper in ['PESOS', '$', 'DOLARES', 'USD', 'U$S', 'DOLAR', 'DOLAR CABLE']:
+            return None
+        
+        # Primero probar ticker exacto
+        data = self._precios_iniciales_cache.get(ticker_upper, {})
+        if isinstance(data, dict) and data.get('codigo'):
+            return data.get('codigo')
+        
+        # Si no encuentra, probar variaciones de ticker (OCR 0↔O)
+        for ticker_var in self._generate_ticker_variations(ticker_upper):
+            data = self._precios_iniciales_cache.get(ticker_var, {})
+            if isinstance(data, dict) and data.get('codigo'):
+                return data.get('codigo')
+        
+        return None
+    
+    def _is_moneda(self, ticker: str) -> bool:
+        """Verifica si el ticker corresponde a una moneda (PESOS, DOLARES, DOLAR CABLE)."""
+        ticker_upper = str(ticker).upper().strip()
+        return ticker_upper in ['PESOS', '$', 'DOLARES', 'USD', 'U$S', 'DOLAR', 'DOLAR CABLE', 'CABLE']
     
     def _vlookup_especies_visual(self, codigo, columna: int):
         """Simula VLOOKUP en EspeciesVisual."""
@@ -327,6 +396,7 @@ class GalloVisualMerger:
         self._create_posicion_inicial(wb)
         self._create_posicion_final(wb)
         self._create_boletos(wb)
+        self._create_cauciones(wb)  # Nueva hoja para cauciones
         self._create_rentas_dividendos_gallo(wb)
         self._create_resultado_ventas_ars(wb)
         self._create_resultado_ventas_usd(wb)
@@ -341,13 +411,16 @@ class GalloVisualMerger:
         return wb
     
     def _create_posicion_inicial(self, wb: Workbook):
-        """Crea hoja Posicion Inicial Gallo."""
+        """Crea hoja Posicion Inicial Gallo con las mismas columnas que Posicion Final."""
         ws = wb.create_sheet("Posicion Inicial Gallo")
         
-        # Headers
-        headers = ['tipo_especie', 'Ticker', 'especie', 'detalle', 'custodia', 
-                   'cantidad', 'precio', 'importe_pesos', 'porc_cartera_pesos',
-                   'importe_dolares', 'porc_cartera_dolares']
+        # Headers (20 columnas) - misma estructura que Posicion Final pero con nombres "Inicial"
+        headers = ['tipo_especie', 'Ticker', 'especie', 'Codigo especie',
+                   'Codigo Especie Origen', 'comentario especies', 'detalle', 'custodia', 'cantidad',
+                   'precio Tenencia Inicial Pesos', 'precio Tenencia Inicial USD', 'Precio de PreciosIniciales',
+                   'precio costo(en proceso)', 'Origen precio costo', 'comentarios precio costo',
+                   'Precio a Utilizar', 'importe_pesos', 'porc_cartera_pesos', 'importe_dolares', 
+                   'porc_cartera_dolares']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -369,35 +442,96 @@ class GalloVisualMerger:
             
             ticker, especie = self._split_especie(especie_full)
             
+            # Para monedas (PESOS, DOLARES, DOLAR CABLE), especie = ticker (no vacía)
+            is_moneda = self._is_moneda(ticker)
+            if is_moneda:
+                especie = ticker  # Col C muestra PESOS, DOLARES, DOLAR CABLE
+            
+            # Buscar código de especie usando ticker en PreciosInicialesEspecies
+            codigo = None
+            codigo_origen = ""
+            if not is_moneda:
+                codigo = self._get_codigo_from_ticker(ticker)
+                if codigo:
+                    codigo_origen = "PreciosInicialesEspecies"
+                else:
+                    # Fallback: buscar en transacciones de Gallo
+                    codigo_str, codigo_origen = self._buscar_codigo_especie(especie_full, tipo_especie)
+                    if codigo_str:
+                        try:
+                            codigo = int(codigo_str)
+                        except:
+                            codigo = codigo_str
+            
             # Datos originales
             detalle = gallo_ws.cell(row, 3).value
             custodia = gallo_ws.cell(row, 4).value
             cantidad = gallo_ws.cell(row, 5).value
-            precio = gallo_ws.cell(row, 6).value
+            precio_orig = gallo_ws.cell(row, 6).value
             importe_pesos = gallo_ws.cell(row, 7).value
             porc_pesos = gallo_ws.cell(row, 8).value
             importe_usd = gallo_ws.cell(row, 9).value
             porc_usd = gallo_ws.cell(row, 10).value
             
-            # Calcular precio si falta
-            if not precio and cantidad and importe_pesos:
-                try:
-                    precio = float(importe_pesos) / float(cantidad)
-                except:
-                    precio = 0
+            # Determinar si es renta fija dólares (precio dividido x100) o TIT.PRIVADOS EXTERIOR (precio en USD)
+            tipo_lower = str(tipo_especie).lower() if tipo_especie else ""
+            es_renta_fija_usd = 'renta fija' in tipo_lower and ('dolar' in tipo_lower or 'usd' in tipo_lower)
+            es_tit_privados_ext = 'privados' in tipo_lower and 'exterior' in tipo_lower
+            
+            # Calcular precios tenencia inicial
+            precio_pesos = 0
+            precio_usd = 0
+            if cantidad and float(cantidad) != 0:
+                if importe_pesos:
+                    try:
+                        precio_pesos = float(importe_pesos) / float(cantidad)
+                        # Para renta fija dólares, el precio viene dividido x100
+                        if es_renta_fija_usd:
+                            precio_pesos = precio_pesos * 100
+                    except:
+                        pass
+                if importe_usd:
+                    try:
+                        precio_usd = float(importe_usd) / float(cantidad)
+                    except:
+                        pass
+            elif precio_orig:
+                precio_pesos = precio_orig
+            
+            # Precio de PreciosInicialesEspecies (via ticker)
+            precio_inicial = self._get_precio_inicial(ticker)
+            
+            # Para TIT.PRIVADOS EXTERIOR, precio viene en USD - convertir a ARS
+            # Usamos cotización del dólar cable al 31/12/2024 (inicio del año)
+            if es_tit_privados_ext and precio_inicial > 0:
+                # Cotización dólar cable al inicio del período (usamos el valor fijo)
+                cotizacion_usd = 1148.93  # Dólar Cable 31/12/2024
+                precio_inicial = precio_inicial * cotizacion_usd
+            
+            # Precio a utilizar = precio de PreciosInicialesEspecies
+            precio_a_utilizar = precio_inicial
             
             # Escribir fila
             ws.cell(row_out, 1, tipo_especie)
             ws.cell(row_out, 2, ticker)
             ws.cell(row_out, 3, especie)
-            ws.cell(row_out, 4, detalle)
-            ws.cell(row_out, 5, custodia)
-            ws.cell(row_out, 6, cantidad)
-            ws.cell(row_out, 7, precio)
-            ws.cell(row_out, 8, importe_pesos)
-            ws.cell(row_out, 9, porc_pesos)
-            ws.cell(row_out, 10, importe_usd)
-            ws.cell(row_out, 11, porc_usd)
+            ws.cell(row_out, 4, codigo)  # Forzar número
+            ws.cell(row_out, 5, codigo_origen)
+            ws.cell(row_out, 6, "")  # comentario especies
+            ws.cell(row_out, 7, detalle)
+            ws.cell(row_out, 8, custodia)
+            ws.cell(row_out, 9, cantidad)
+            ws.cell(row_out, 10, precio_pesos)
+            ws.cell(row_out, 11, precio_usd)
+            ws.cell(row_out, 12, precio_inicial)
+            ws.cell(row_out, 13, "")  # precio costo (en proceso)
+            ws.cell(row_out, 14, "")  # origen precio costo
+            ws.cell(row_out, 15, "")  # comentarios precio costo
+            ws.cell(row_out, 16, precio_a_utilizar)
+            ws.cell(row_out, 17, importe_pesos)
+            ws.cell(row_out, 18, porc_pesos)
+            ws.cell(row_out, 19, importe_usd)
+            ws.cell(row_out, 20, porc_usd)
             
             row_out += 1
     
@@ -406,7 +540,7 @@ class GalloVisualMerger:
         ws = wb.create_sheet("Posicion Final Gallo")
         
         # Headers (20 columnas)
-        headers = ['tipo_especie', 'Ticker', 'especie', 'Codigo especie(gallo match con otras hojas)',
+        headers = ['tipo_especie', 'Ticker', 'especie', 'Codigo especie',
                    'Codigo Especie Origen', 'comentario especies', 'detalle', 'custodia', 'cantidad',
                    'precio Tenencia Final Pesos', 'precio Tenencia Final USD', 'Precio Tenencia Inicial',
                    'precio costo(en proceso)', 'Origen precio costo', 'comentarios precio costo',
@@ -433,8 +567,26 @@ class GalloVisualMerger:
             
             ticker, especie = self._split_especie(especie_full)
             
-            # Buscar código de especie
-            codigo, codigo_origen = self._buscar_codigo_especie(especie_full, tipo_especie)
+            # Para monedas (PESOS, DOLARES, DOLAR CABLE), especie = ticker
+            is_moneda = self._is_moneda(ticker)
+            if is_moneda:
+                especie = ticker  # Col C muestra PESOS, DOLARES, DOLAR CABLE
+            
+            # Buscar código de especie usando ticker en PreciosInicialesEspecies
+            codigo = None
+            codigo_origen = ""
+            if not is_moneda:
+                codigo = self._get_codigo_from_ticker(ticker)
+                if codigo:
+                    codigo_origen = "PreciosInicialesEspecies"
+                else:
+                    # Fallback: buscar en transacciones de Gallo
+                    codigo_str, codigo_origen = self._buscar_codigo_especie(especie_full, tipo_especie)
+                    if codigo_str:
+                        try:
+                            codigo = int(codigo_str)
+                        except:
+                            codigo = codigo_str
             
             # Datos originales
             detalle = gallo_ws.cell(row, 3).value
@@ -445,7 +597,11 @@ class GalloVisualMerger:
             importe_usd = gallo_ws.cell(row, 9).value
             porc_usd = gallo_ws.cell(row, 10).value
             
-            # Calcular precios
+            # Determinar si es renta fija dólares (precio dividido x100) o TIT.PRIVADOS EXTERIOR (precio en USD)
+            tipo_lower = str(tipo_especie).lower() if tipo_especie else ""
+            es_tit_privados_ext = 'privados' in tipo_lower and 'exterior' in tipo_lower
+            
+            # Calcular precios tenencia final
             precio_pesos = 0
             precio_usd = 0
             if cantidad and float(cantidad) != 0:
@@ -460,17 +616,22 @@ class GalloVisualMerger:
                     except:
                         pass
             
-            # Precio tenencia inicial
+            # Precio tenencia inicial (de PreciosInicialesEspecies)
             precio_inicial = self._get_precio_inicial(ticker)
             
-            # Por ahora, precio a utilizar = precio inicial
+            # Para TIT.PRIVADOS EXTERIOR, precio viene en USD - convertir a ARS
+            if es_tit_privados_ext and precio_inicial > 0:
+                cotizacion_usd = 1148.93  # Dólar Cable 31/12/2024
+                precio_inicial = precio_inicial * cotizacion_usd
+            
+            # Precio a utilizar = precio tenencia inicial
             precio_a_utilizar = precio_inicial
             
             # Escribir fila
             ws.cell(row_out, 1, tipo_especie)
             ws.cell(row_out, 2, ticker)
             ws.cell(row_out, 3, especie)
-            ws.cell(row_out, 4, codigo)
+            ws.cell(row_out, 4, codigo)  # Forzar número (int)
             ws.cell(row_out, 5, codigo_origen)
             ws.cell(row_out, 6, "")  # comentario especies
             ws.cell(row_out, 7, detalle)
@@ -514,32 +675,34 @@ class GalloVisualMerger:
             if any(skip in sheet_name for skip in ['Posicion', 'Resultado', 'Posición']):
                 continue
             
+            # SKIP cauciones - van en hoja separada
+            if 'caucion' in sheet_name.lower():
+                continue
+            
             try:
                 gallo_ws = self.gallo_wb[sheet_name]
             except:
                 continue
             
-            # Detectar si es hoja de cauciones (estructura diferente)
-            is_caucion = 'caucion' in sheet_name.lower()
-            
             for row in range(2, gallo_ws.max_row + 1):
-                # En cauciones, la operación está en col 6; en otras hojas, col 5
-                if is_caucion:
-                    operacion = gallo_ws.cell(row, 6).value  # Col F para cauciones
-                    fecha = gallo_ws.cell(row, 4).value
-                    numero = gallo_ws.cell(row, 7).value
-                else:
-                    operacion = gallo_ws.cell(row, 5).value  # Col E
-                    fecha = gallo_ws.cell(row, 4).value
-                    numero = gallo_ws.cell(row, 6).value
+                operacion = gallo_ws.cell(row, 5).value  # Col E
+                fecha = gallo_ws.cell(row, 4).value
+                numero = gallo_ws.cell(row, 6).value
                 
                 if not operacion:
                     continue
                 
                 operacion_lower = str(operacion).lower().strip()
                 
+                # SKIP operaciones de cauciones (COL CAU TER con instrumento VARIAS)
+                especie = gallo_ws.cell(row, 3).value
+                if especie and 'varias' in str(especie).lower():
+                    continue
+                if 'col cau' in operacion_lower:
+                    continue
+                
                 # Solo operaciones de compra/venta para Boletos
-                operaciones_validas = ['compra', 'venta', 'cpra', 'canje', 'licitacion', 'col cau']
+                operaciones_validas = ['compra', 'venta', 'cpra', 'canje', 'licitacion']
                 if not any(op in operacion_lower for op in operaciones_validas):
                     continue
                 
@@ -549,24 +712,39 @@ class GalloVisualMerger:
                 
                 # Extraer datos
                 cod_especie = gallo_ws.cell(row, 2).value
-                especie = gallo_ws.cell(row, 3).value
-                cantidad = gallo_ws.cell(row, 7).value if not is_caucion else gallo_ws.cell(row, 8).value
-                precio = gallo_ws.cell(row, 8).value if not is_caucion else 1
-                resultado_pesos = gallo_ws.cell(row, 11).value if not is_caucion else None
-                resultado_usd = gallo_ws.cell(row, 12).value if not is_caucion else gallo_ws.cell(row, 11).value
-                gastos_pesos = gallo_ws.cell(row, 13).value if not is_caucion else gallo_ws.cell(row, 12).value
-                gastos_usd = gallo_ws.cell(row, 14).value if not is_caucion else gallo_ws.cell(row, 13).value
+                cantidad = gallo_ws.cell(row, 7).value
+                precio = gallo_ws.cell(row, 8).value
+                resultado_pesos = gallo_ws.cell(row, 11).value
+                resultado_usd = gallo_ws.cell(row, 12).value
+                gastos_pesos = gallo_ws.cell(row, 13).value
+                gastos_usd = gallo_ws.cell(row, 14).value
                 
-                # Determinar moneda
-                moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
+                # Determinar moneda PRIMERO basándose en el nombre de la hoja
+                # Si la hoja dice "Pesos", es Pesos (ignorar "USD" en operación)
+                # Si la hoja dice "Dolares", es Dolar MEP
+                # Si la hoja dice "Exterior", es Dolar Cable
+                sheet_lower = sheet_name.lower()
+                if 'pesos' in sheet_lower:
+                    moneda = "Pesos"
+                elif 'exterior' in sheet_lower:
+                    moneda = "Dolar Cable"
+                elif 'dolar' in sheet_lower:
+                    moneda = "Dolar MEP"
+                else:
+                    # Fallback: usar la lógica original
+                    moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
                 
                 # Gastos según moneda
                 gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
                 if gastos is None:
                     gastos = 0
                 
-                # Código limpio
+                # Código limpio y forzar a número
                 cod_clean = self._clean_codigo(cod_especie)
+                try:
+                    cod_num = int(cod_clean) if cod_clean else None
+                except:
+                    cod_num = cod_clean
                 
                 # Convertir fecha a datetime para Excel
                 fecha_dt, _ = self._parse_fecha(fecha)
@@ -576,7 +754,7 @@ class GalloVisualMerger:
                 
                 # Guardar transacción (sin fórmulas, se generan al escribir)
                 all_transactions.append({
-                    'cod_instrum': cod_clean,
+                    'cod_instrum': cod_num,  # Forzado a número
                     'fecha': fecha_dt if fecha_dt else fecha,
                     'fecha_raw': fecha,
                     'liquidacion': "",
@@ -618,13 +796,17 @@ class GalloVisualMerger:
                 if year != 2025:
                     continue
                 
-                # Código limpio
+                # Código limpio y forzar a número
                 cod_clean = self._clean_codigo(cod_instrum)
+                try:
+                    cod_num = int(cod_clean) if cod_clean else None
+                except:
+                    cod_num = cod_clean
                 
                 auditoria = f"Origen: Visual | Fecha: {concertacion} | Cod: {cod_instrum} | Op: {operacion}"
                 
                 all_transactions.append({
-                    'cod_instrum': cod_clean,
+                    'cod_instrum': cod_num,  # Forzado a número
                     'fecha': fecha_dt if fecha_dt else concertacion,
                     'fecha_raw': concertacion,
                     'liquidacion': liquidacion,
@@ -643,30 +825,32 @@ class GalloVisualMerger:
         except KeyError:
             pass  # Visual no tiene hoja Boletos
         
-        # Ordenar por cod_instrum y fecha
+        # Ordenar por fecha de concertación
         def sort_key(t):
-            cod = t.get('cod_instrum') or 0
-            try:
-                cod_num = int(cod) if str(cod).isdigit() else 999999
-            except:
-                cod_num = 999999
             fecha = t.get('fecha')
             if isinstance(fecha, datetime):
-                return (cod_num, fecha)
+                return fecha
             else:
-                return (cod_num, datetime.min)
+                return datetime.min
         
         all_transactions.sort(key=sort_key)
         
         # Escribir transacciones ordenadas
         for row_out, trans in enumerate(all_transactions, start=2):
             # Fórmulas con row_out correcto
-            tipo_instrumento = f'=VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE)' if not trans['tipo_instrumento_val'] else trans['tipo_instrumento_val']
-            instrumento_con_moneda = f'=VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE)'
-            tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(INDEX(\'Cotizacion Dolar Historica\'!$B:$B,MATCH(1,(\'Cotizacion Dolar Historica\'!$A:$A=B{row_out})*(\'Cotizacion Dolar Historica\'!$C:$C=E{row_out}),0)),""))'
+            # Tipo de Instrumento: usa VLOOKUP si no viene de Visual
+            tipo_instrumento = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE),"")' if not trans['tipo_instrumento_val'] else trans['tipo_instrumento_val']
+            
+            # InstrumentoConMoneda
+            instrumento_con_moneda = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE),"")'
+            
+            # Tipo Cambio: fórmula simplificada compatible con Excel 2013 español
+            # Usa VLOOKUP simple por fecha (asumiendo que Cotización tiene fecha en col A, valor en col B)
+            tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
+            
             bruto = f'=J{row_out}*K{row_out}'
             neto = f'=IF(J{row_out}>0,J{row_out}*K{row_out}+O{row_out},J{row_out}*K{row_out}-O{row_out})'
-            moneda_emision = f'=VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE)'
+            moneda_emision = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE),"")'
             
             ws.cell(row_out, 1, tipo_instrumento)
             ws.cell(row_out, 2, trans['fecha'])
@@ -674,7 +858,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 4, trans['numero'])
             ws.cell(row_out, 5, trans['moneda'])
             ws.cell(row_out, 6, trans['operacion'])
-            ws.cell(row_out, 7, trans['cod_instrum'])
+            ws.cell(row_out, 7, trans['cod_instrum'])  # Ya es número
             ws.cell(row_out, 8, trans['especie'])
             ws.cell(row_out, 9, instrumento_con_moneda)
             ws.cell(row_out, 10, trans['cantidad'])
@@ -688,8 +872,166 @@ class GalloVisualMerger:
             ws.cell(row_out, 18, moneda_emision)
             ws.cell(row_out, 19, trans['auditoria'])
     
+    def _create_cauciones(self, wb: Workbook):
+        """
+        Crea hoja Cauciones con operaciones de caución separadas de Boletos.
+        Columnas según estructura Visual con match a Gallo:
+        - Concertación (Gallo: fecha)
+        - Plazo (calculado: diferencia entre vencimiento y fecha)
+        - Liquidación (Gallo: vencimiento)
+        - Operación (Gallo: operacion)
+        - Boleto (Gallo: numero)
+        - Contado (Gallo: colocado)
+        - Futuro (Gallo: al_vencimiento)
+        - Tipo de Cambio (1 si pesos, cotización dólar si dólares)
+        - Tasa (%) (no hay en Gallo)
+        - Interés Bruto (no hay en Gallo)
+        - Interés Devengado (Gallo: interes_pesos o interes_usd)
+        - Aranceles (Gallo: gastos_pesos o gastos_usd)
+        - Derechos (no hay en Gallo)
+        - Costo Financiero (calculado: -(intereses + gastos))
+        """
+        ws = wb.create_sheet("Cauciones")
+        
+        # Headers según estructura Visual
+        headers = ['Concertación', 'Plazo', 'Liquidación', 'Operación', 'Boleto',
+                   'Contado', 'Futuro', 'Tipo de Cambio', 'Tasa (%)', 
+                   'Interés Bruto', 'Interés Devengado', 'Aranceles', 'Derechos',
+                   'Costo Financiero', 'Moneda', 'Origen', 'Auditoría']
+        
+        for col, header in enumerate(headers, 1):
+            ws.cell(1, col, header)
+            ws.cell(1, col).font = Font(bold=True)
+        
+        # Recolectar todas las cauciones para ordenar
+        all_cauciones = []
+        
+        # Procesar hojas de Cauciones de Gallo
+        for sheet_name in self.gallo_wb.sheetnames:
+            if 'caucion' not in sheet_name.lower():
+                continue
+            
+            # Determinar moneda del nombre de la hoja
+            if 'pesos' in sheet_name.lower():
+                moneda = "Pesos"
+                tipo_cambio = 1
+            elif 'dolar' in sheet_name.lower():
+                moneda = "Dolar MEP"
+                tipo_cambio = 1167.806  # Cotización dólar al 31/12/2024
+            else:
+                moneda = "Pesos"
+                tipo_cambio = 1
+            
+            try:
+                gallo_ws = self.gallo_wb[sheet_name]
+            except:
+                continue
+            
+            # Estructura Cauciones Gallo según OneShotSpec:
+            # ["tipo_fila", "cod_especie", "especie", "fecha", "vencimiento", "operacion", 
+            #  "numero", "colocado", "al_vencimiento", "interes_pesos", "interes_usd", 
+            #  "gastos_pesos", "gastos_usd"]
+            for row in range(2, gallo_ws.max_row + 1):
+                tipo_fila = gallo_ws.cell(row, 1).value
+                fecha = gallo_ws.cell(row, 4).value
+                vencimiento = gallo_ws.cell(row, 5).value
+                operacion = gallo_ws.cell(row, 6).value
+                numero = gallo_ws.cell(row, 7).value
+                colocado = gallo_ws.cell(row, 8).value
+                al_vencimiento = gallo_ws.cell(row, 9).value
+                interes_pesos = gallo_ws.cell(row, 10).value
+                interes_usd = gallo_ws.cell(row, 11).value
+                gastos_pesos = gallo_ws.cell(row, 12).value
+                gastos_usd = gallo_ws.cell(row, 13).value
+                
+                # Saltear filas de total
+                if tipo_fila and 'total' in str(tipo_fila).lower():
+                    continue
+                
+                if not operacion:
+                    continue
+                
+                # Filtrar solo 2025
+                if not self._is_year_2025(fecha):
+                    continue
+                
+                # Parsear fechas
+                fecha_dt, _ = self._parse_fecha(fecha)
+                venc_dt, _ = self._parse_fecha(vencimiento)
+                
+                # Calcular plazo (diferencia en días)
+                plazo = 0
+                if fecha_dt and venc_dt:
+                    plazo = (venc_dt - fecha_dt).days
+                
+                # Interés según moneda
+                interes = interes_pesos if moneda == "Pesos" else interes_usd
+                interes = interes if interes else 0
+                
+                # Gastos según moneda
+                gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
+                gastos = gastos if gastos else 0
+                
+                # Costo financiero = -(intereses + gastos)
+                try:
+                    costo_financiero = -(float(interes) + float(gastos))
+                except:
+                    costo_financiero = 0
+                
+                auditoria = f"Origen: Gallo-{sheet_name}"
+                
+                all_cauciones.append({
+                    'fecha': fecha_dt if fecha_dt else fecha,
+                    'plazo': plazo,
+                    'liquidacion': venc_dt if venc_dt else vencimiento,
+                    'operacion': operacion,
+                    'boleto': numero,
+                    'contado': colocado,
+                    'futuro': al_vencimiento,
+                    'tipo_cambio': tipo_cambio,
+                    'tasa': None,  # No disponible en Gallo
+                    'interes_bruto': None,  # No disponible en Gallo
+                    'interes_devengado': interes,
+                    'aranceles': gastos,
+                    'derechos': None,  # No disponible en Gallo
+                    'costo_financiero': costo_financiero,
+                    'moneda': moneda,
+                    'origen': f"Gallo-{sheet_name}",
+                    'auditoria': auditoria,
+                })
+        
+        # Ordenar por fecha de concertación
+        def sort_key(t):
+            fecha = t.get('fecha')
+            if isinstance(fecha, datetime):
+                return fecha
+            else:
+                return datetime.min
+        
+        all_cauciones.sort(key=sort_key)
+        
+        # Escribir cauciones ordenadas
+        for row_out, cau in enumerate(all_cauciones, start=2):
+            ws.cell(row_out, 1, cau['fecha'])
+            ws.cell(row_out, 2, cau['plazo'])
+            ws.cell(row_out, 3, cau['liquidacion'])
+            ws.cell(row_out, 4, cau['operacion'])
+            ws.cell(row_out, 5, cau['boleto'])
+            ws.cell(row_out, 6, cau['contado'])
+            ws.cell(row_out, 7, cau['futuro'])
+            ws.cell(row_out, 8, cau['tipo_cambio'])
+            ws.cell(row_out, 9, cau['tasa'])
+            ws.cell(row_out, 10, cau['interes_bruto'])
+            ws.cell(row_out, 11, cau['interes_devengado'])
+            ws.cell(row_out, 12, cau['aranceles'])
+            ws.cell(row_out, 13, cau['derechos'])
+            ws.cell(row_out, 14, cau['costo_financiero'])
+            ws.cell(row_out, 15, cau['moneda'])
+            ws.cell(row_out, 16, cau['origen'])
+            ws.cell(row_out, 17, cau['auditoria'])
+    
     def _create_rentas_dividendos_gallo(self, wb: Workbook):
-        """Crea hoja Rentas y Dividendos Gallo."""
+        """Crea hoja Rentas y Dividendos Gallo, ordenada por fecha de concertación."""
         ws = wb.create_sheet("Rentas y Dividendos Gallo")
         
         # Headers (20 columnas)
@@ -703,7 +1045,8 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        row_out = 2
+        # Recolectar todas las transacciones para ordenar
+        all_rentas = []
         
         # Procesar hojas de Gallo
         for sheet_name in self.gallo_wb.sheetnames:
@@ -745,8 +1088,16 @@ class GalloVisualMerger:
                 if not self._is_year_2025(fecha):
                     continue
                 
-                # Determinar moneda
-                moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
+                # Determinar moneda basándose en nombre de hoja
+                sheet_lower = sheet_name.lower()
+                if 'pesos' in sheet_lower:
+                    moneda = "Pesos"
+                elif 'exterior' in sheet_lower:
+                    moneda = "Dolar Cable"
+                elif 'dolar' in sheet_lower:
+                    moneda = "Dolar MEP"
+                else:
+                    moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
                 
                 # Gastos según moneda
                 gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
@@ -758,54 +1109,40 @@ class GalloVisualMerger:
                     if precio and float(precio) == 100:
                         precio = 1
                 
-                # Código limpio
+                # Código limpio y forzar a número
                 cod_clean = self._clean_codigo(cod_especie)
+                try:
+                    cod_num = int(cod_clean) if cod_clean else None
+                except:
+                    cod_num = cod_clean
                 
                 # Bruto
                 bruto = importe if importe else (cantidad * precio if cantidad and precio else 0)
                 
-                # Neto calculado
-                if 'amortizacion' in operacion_lower:
-                    # Para amortización: -bruto - costo
-                    neto = f'=-M{row_out}-P{row_out}'
-                else:
-                    # Normal: bruto - gastos
-                    neto = f'=M{row_out}-O{row_out}'
-                
-                # Fórmulas
-                instrumento_con_moneda = f'=VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE)'
-                tipo_instrumento = f'=VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE)'
-                tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(INDEX(\'Cotizacion Dolar Historica\'!$B:$B,MATCH(1,(\'Cotizacion Dolar Historica\'!$A:$A=B{row_out})*(\'Cotizacion Dolar Historica\'!$C:$C=E{row_out}),0)),""))'
-                moneda_emision = f'=VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE)'
-                
-                auditoria = f"Origen: Gallo-{sheet_name} | Operación: {operacion}"
-                
                 # Parsear fecha
                 fecha_dt, _ = self._parse_fecha(fecha)
                 
-                # Escribir fila
-                ws.cell(row_out, 1, tipo_instrumento)
-                ws.cell(row_out, 2, fecha_dt if fecha_dt else fecha)
-                ws.cell(row_out, 3, "")
-                ws.cell(row_out, 4, numero)
-                ws.cell(row_out, 5, moneda)
-                ws.cell(row_out, 6, operacion.upper())
-                ws.cell(row_out, 7, cod_clean)
-                ws.cell(row_out, 8, especie)
-                ws.cell(row_out, 9, instrumento_con_moneda)
-                ws.cell(row_out, 10, cantidad if cantidad else 0)
-                ws.cell(row_out, 11, precio if precio else 0)
-                ws.cell(row_out, 12, tipo_cambio)
-                ws.cell(row_out, 13, bruto)
-                ws.cell(row_out, 14, 0)  # Interés
-                ws.cell(row_out, 15, gastos)
-                ws.cell(row_out, 16, costo if costo else 0)
-                ws.cell(row_out, 17, neto)
-                ws.cell(row_out, 18, f"Gallo-{sheet_name}")
-                ws.cell(row_out, 19, moneda_emision)
-                ws.cell(row_out, 20, auditoria)
+                auditoria = f"Origen: Gallo-{sheet_name} | Operación: {operacion}"
                 
-                row_out += 1
+                all_rentas.append({
+                    'tipo_instrumento_val': None,  # Usará fórmula
+                    'fecha': fecha_dt if fecha_dt else fecha,
+                    'liquidacion': "",
+                    'numero': numero,
+                    'moneda': moneda,
+                    'operacion': operacion.upper(),
+                    'cod_num': cod_num,
+                    'especie': especie,
+                    'cantidad': cantidad if cantidad else 0,
+                    'precio': precio if precio else 0,
+                    'bruto': bruto,
+                    'interes': 0,
+                    'gastos': gastos,
+                    'costo': costo if costo else 0,
+                    'origen': f"Gallo-{sheet_name}",
+                    'is_amortizacion': 'amortizacion' in operacion_lower,
+                    'auditoria': auditoria,
+                })
         
         # Agregar Rentas/Dividendos de Visual
         visual_sheets = [('Rentas Dividendos ARS', 'Pesos'), ('Rentas Dividendos USD', 'Dolar')]
@@ -818,7 +1155,7 @@ class GalloVisualMerger:
             for row in range(2, visual_ws.max_row + 1):
                 instrumento = visual_ws.cell(row, 1).value
                 cod_instrum = visual_ws.cell(row, 2).value
-                categoria = visual_ws.cell(row, 3).value  # Rentas/Dividendos
+                categoria = visual_ws.cell(row, 3).value
                 tipo_instrum = visual_ws.cell(row, 4).value
                 concertacion = visual_ws.cell(row, 5).value
                 liquidacion = visual_ws.cell(row, 6).value
@@ -838,8 +1175,12 @@ class GalloVisualMerger:
                 if year != 2025:
                     continue
                 
-                # Código limpio
+                # Código limpio y convertir a número
                 cod_clean = self._clean_codigo(cod_instrum)
+                try:
+                    cod_num = int(cod_clean) if cod_clean else None
+                except (ValueError, TypeError):
+                    cod_num = cod_clean
                 
                 # Determinar moneda correcta
                 if moneda:
@@ -854,43 +1195,73 @@ class GalloVisualMerger:
                 else:
                     moneda_final = moneda_default
                 
-                # Bruto es el importe
                 bruto = importe if importe else 0
-                
-                # Neto calculado
-                neto = f'=M{row_out}-O{row_out}'
-                
-                # Fórmulas
-                instrumento_con_moneda = f'=VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE)'
-                tipo_instrumento_formula = f'=VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE)'
-                tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(INDEX(\'Cotizacion Dolar Historica\'!$B:$B,MATCH(1,(\'Cotizacion Dolar Historica\'!$A:$A=B{row_out})*(\'Cotizacion Dolar Historica\'!$C:$C=E{row_out}),0)),""))'
-                moneda_emision = f'=VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE)'
-                
                 auditoria = f"Origen: Visual-{visual_sheet_name} | Cat: {categoria} | Op: {tipo_operacion}"
                 
-                # Escribir fila
-                ws.cell(row_out, 1, tipo_instrum if tipo_instrum else tipo_instrumento_formula)
-                ws.cell(row_out, 2, fecha_dt if fecha_dt else concertacion)
-                ws.cell(row_out, 3, liquidacion)
-                ws.cell(row_out, 4, nro_ndc)
-                ws.cell(row_out, 5, moneda_final)
-                ws.cell(row_out, 6, str(tipo_operacion).upper() if tipo_operacion else "")
-                ws.cell(row_out, 7, cod_clean)
-                ws.cell(row_out, 8, instrumento)
-                ws.cell(row_out, 9, instrumento_con_moneda)
-                ws.cell(row_out, 10, cantidad if cantidad else 0)
-                ws.cell(row_out, 11, 1)  # Precio = 1 para rentas/dividendos de Visual
-                ws.cell(row_out, 12, tipo_cambio)
-                ws.cell(row_out, 13, bruto)
-                ws.cell(row_out, 14, 0)  # Interés
-                ws.cell(row_out, 15, gastos if gastos else 0)
-                ws.cell(row_out, 16, 0)  # Costo
-                ws.cell(row_out, 17, neto)
-                ws.cell(row_out, 18, f"Visual-{visual_sheet_name}")
-                ws.cell(row_out, 19, moneda_emision)
-                ws.cell(row_out, 20, auditoria)
-                
-                row_out += 1
+                all_rentas.append({
+                    'tipo_instrumento_val': tipo_instrum,
+                    'fecha': fecha_dt if fecha_dt else concertacion,
+                    'liquidacion': liquidacion,
+                    'numero': nro_ndc,
+                    'moneda': moneda_final,
+                    'operacion': str(tipo_operacion).upper() if tipo_operacion else "",
+                    'cod_num': cod_num,
+                    'especie': instrumento,
+                    'cantidad': cantidad if cantidad else 0,
+                    'precio': 1,  # Precio = 1 para rentas/dividendos de Visual
+                    'bruto': bruto,
+                    'interes': 0,
+                    'gastos': gastos if gastos else 0,
+                    'costo': 0,
+                    'origen': f"Visual-{visual_sheet_name}",
+                    'is_amortizacion': False,
+                    'auditoria': auditoria,
+                })
+        
+        # Ordenar por fecha de concertación
+        def sort_key(t):
+            fecha = t.get('fecha')
+            if isinstance(fecha, datetime):
+                return fecha
+            else:
+                return datetime.min
+        
+        all_rentas.sort(key=sort_key)
+        
+        # Escribir transacciones ordenadas con fórmulas correctas
+        for row_out, renta in enumerate(all_rentas, start=2):
+            # Fórmulas con row_out correcto
+            tipo_instrumento = renta['tipo_instrumento_val'] if renta['tipo_instrumento_val'] else f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE),"")'
+            instrumento_con_moneda = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE),"")'
+            tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
+            moneda_emision = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE),"")'
+            
+            # Neto calculado
+            if renta['is_amortizacion']:
+                neto = f'=-M{row_out}-P{row_out}'
+            else:
+                neto = f'=M{row_out}-O{row_out}'
+            
+            ws.cell(row_out, 1, tipo_instrumento)
+            ws.cell(row_out, 2, renta['fecha'])
+            ws.cell(row_out, 3, renta['liquidacion'])
+            ws.cell(row_out, 4, renta['numero'])
+            ws.cell(row_out, 5, renta['moneda'])
+            ws.cell(row_out, 6, renta['operacion'])
+            ws.cell(row_out, 7, renta['cod_num'])  # Forzado a número
+            ws.cell(row_out, 8, renta['especie'])
+            ws.cell(row_out, 9, instrumento_con_moneda)
+            ws.cell(row_out, 10, renta['cantidad'])
+            ws.cell(row_out, 11, renta['precio'])
+            ws.cell(row_out, 12, tipo_cambio)
+            ws.cell(row_out, 13, renta['bruto'])
+            ws.cell(row_out, 14, renta['interes'])
+            ws.cell(row_out, 15, renta['gastos'])
+            ws.cell(row_out, 16, renta['costo'])
+            ws.cell(row_out, 17, neto)
+            ws.cell(row_out, 18, renta['origen'])
+            ws.cell(row_out, 19, moneda_emision)
+            ws.cell(row_out, 20, renta['auditoria'])
     
     def _create_resultado_ventas_ars(self, wb: Workbook):
         """Crea hoja Resultado Ventas ARS."""
