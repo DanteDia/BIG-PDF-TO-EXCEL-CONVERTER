@@ -966,17 +966,14 @@ class GalloVisualMerger:
                 
                 # Interés según moneda
                 interes = interes_pesos if moneda == "Pesos" else interes_usd
-                interes = interes if interes else 0
+                interes = float(interes) if interes else 0
                 
                 # Gastos según moneda
                 gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
-                gastos = gastos if gastos else 0
+                gastos = float(gastos) if gastos else 0
                 
                 # Costo financiero = -(intereses + gastos)
-                try:
-                    costo_financiero = -(float(interes) + float(gastos))
-                except:
-                    costo_financiero = 0
+                costo_financiero = -(interes + gastos)
                 
                 auditoria = f"Origen: Gallo-{sheet_name}"
                 
@@ -1264,65 +1261,104 @@ class GalloVisualMerger:
             ws.cell(row_out, 20, renta['auditoria'])
     
     def _create_resultado_ventas_ars(self, wb: Workbook):
-        """Crea hoja Resultado Ventas ARS."""
+        """Crea hoja Resultado Ventas ARS con transacciones de Boletos filtradas por Pesos."""
         ws = wb.create_sheet("Resultado Ventas ARS")
         
-        # Headers (24 columnas)
+        # Headers (25 columnas - agregamos columna explicativa)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
                    'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación',
                    'Cantidad', 'Precio', 'Bruto', 'Interés', 'Tipo de Cambio',
                    'Gastos', 'IVA', 'Resultado', 'Cantidad Stock Inicial',
                    'Precio Stock Inicial', 'Costo por venta(gallo)', 'Neto Calculado(visual)',
                    'Resultado Calculado(final)', 'Cantidad de Stock Final', 
-                   'Precio Stock Final', 'chequeado']
+                   'Precio Stock Final', 'Explicación Cálculo', 'chequeado']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Las fórmulas referencian a Boletos filtrando por moneda = Pesos
-        # Por ahora, creamos la estructura con fórmulas
+        # Recolectar transacciones de Boletos con moneda = Pesos
         boletos_ws = wb['Boletos']
+        transactions = []
         
-        row_out = 2
         for boletos_row in range(2, boletos_ws.max_row + 1):
-            # Fórmulas que filtran por moneda = Pesos (columna R de Boletos)
-            ws.cell(row_out, 1, f'=Boletos!Q{boletos_row}')  # Origen
-            ws.cell(row_out, 2, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!A{boletos_row},"")')
-            ws.cell(row_out, 3, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!I{boletos_row},"")')
-            ws.cell(row_out, 4, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!G{boletos_row},"")')
-            ws.cell(row_out, 5, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!B{boletos_row},"")')
-            ws.cell(row_out, 6, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!C{boletos_row},"")')
-            ws.cell(row_out, 7, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!E{boletos_row},"")')
-            ws.cell(row_out, 8, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!F{boletos_row},"")')
-            ws.cell(row_out, 9, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!J{boletos_row},"")')
-            ws.cell(row_out, 10, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!K{boletos_row},"")')
-            ws.cell(row_out, 11, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!M{boletos_row},"")')
-            ws.cell(row_out, 12, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!N{boletos_row},"")')
-            ws.cell(row_out, 13, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!L{boletos_row},"")')
-            ws.cell(row_out, 14, f'=IF(Boletos!R{boletos_row}="Pesos",Boletos!O{boletos_row},"")')
-            ws.cell(row_out, 15, f'=IF(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')  # IVA
-            ws.cell(row_out, 16, "")  # Resultado (vacío)
+            moneda_emision = boletos_ws.cell(boletos_row, 18).value  # Col R = moneda_emision
+            
+            # Filtrar solo Pesos
+            if moneda_emision != "Pesos":
+                continue
+            
+            # Extraer valores
+            origen = boletos_ws.cell(boletos_row, 17).value  # Col Q
+            tipo_instrumento = boletos_ws.cell(boletos_row, 1).value
+            instrumento = boletos_ws.cell(boletos_row, 9).value  # Col I
+            cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
+            concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B
+            liquidacion = boletos_ws.cell(boletos_row, 3).value  # Col C
+            moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
+            tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
+            cantidad = boletos_ws.cell(boletos_row, 10).value  # Col J
+            precio = boletos_ws.cell(boletos_row, 11).value  # Col K
+            bruto_formula = boletos_ws.cell(boletos_row, 13).value  # Col M (puede ser fórmula)
+            interes = boletos_ws.cell(boletos_row, 14).value  # Col N
+            tipo_cambio_formula = boletos_ws.cell(boletos_row, 12).value  # Col L
+            gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
+            
+            transactions.append({
+                'origen': origen,
+                'tipo_instrumento': tipo_instrumento,
+                'instrumento': instrumento,
+                'cod_instrum': cod_instrum,
+                'concertacion': concertacion,
+                'liquidacion': liquidacion,
+                'moneda': moneda,
+                'tipo_operacion': tipo_operacion,
+                'cantidad': cantidad,
+                'precio': precio,
+                'bruto_formula': bruto_formula,
+                'interes': interes,
+                'tipo_cambio_formula': tipo_cambio_formula,
+                'gastos': gastos,
+            })
+        
+        # Escribir transacciones
+        for row_out, trans in enumerate(transactions, start=2):
+            ws.cell(row_out, 1, trans['origen'])
+            ws.cell(row_out, 2, trans['tipo_instrumento'])
+            ws.cell(row_out, 3, trans['instrumento'])
+            ws.cell(row_out, 4, trans['cod_instrum'])
+            ws.cell(row_out, 5, trans['concertacion'])  # Fecha como datetime
+            ws.cell(row_out, 6, trans['liquidacion'])
+            ws.cell(row_out, 7, trans['moneda'])
+            ws.cell(row_out, 8, trans['tipo_operacion'])
+            ws.cell(row_out, 9, trans['cantidad'])
+            ws.cell(row_out, 10, trans['precio'])
+            ws.cell(row_out, 11, trans['bruto_formula'])
+            ws.cell(row_out, 12, trans['interes'])
+            ws.cell(row_out, 13, trans['tipo_cambio_formula'])
+            ws.cell(row_out, 14, trans['gastos'])
+            
+            # IVA
+            ws.cell(row_out, 15, f'=IF(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')
+            
+            # Resultado (vacío)
+            ws.cell(row_out, 16, "")
             
             # Running Stock Logic:
-            # - Primera fila (row_out=2): VLOOKUP a Posicion Final Gallo
-            # - Filas siguientes: Si mismo Cod.Instrum que fila anterior, usar Stock Final anterior
-            
             if row_out == 2:
-                # Primera fila: siempre VLOOKUP
-                ws.cell(row_out, 17, f'=IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)')
-                ws.cell(row_out, 18, f'=IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,12,FALSE),0)')
+                # Primera fila: VLOOKUP a Posicion Inicial si Gallo, Posicion Final si Visual
+                ws.cell(row_out, 17, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                ws.cell(row_out, 18, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))')
             else:
-                # Filas siguientes: condicional - si mismo código, usar stock final de fila anterior
                 prev = row_out - 1
-                ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,12,FALSE),0))')
+                ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
+                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0)))')
             
-            # Costo por venta (solo si es venta: cantidad negativa)
+            # Costo por venta
             ws.cell(row_out, 19, f'=IFERROR(IF(I{row_out}<0,I{row_out}*R{row_out},0),"")')
             
-            # Neto Calculado (solo ventas)
-            ws.cell(row_out, 20, f'=IF(S{row_out}<>0,K{row_out}+N{row_out},0)')
+            # Neto Calculado (para todas las ops: K+N)
+            ws.cell(row_out, 20, f'=K{row_out}+N{row_out}')
             
             # Resultado Calculado
             ws.cell(row_out, 21, f'=IF(S{row_out}<>0,ABS(T{row_out})-ABS(S{row_out}),0)')
@@ -1333,27 +1369,18 @@ class GalloVisualMerger:
             # Precio Stock Final (promedio ponderado)
             ws.cell(row_out, 23, f'=IF(V{row_out}=0,0,IF(I{row_out}>0,(I{row_out}*J{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out}),R{row_out}))')
             
-            # Chequeado/Auditoría - Explicación de cómo se obtienen los resultados
-            if row_out == 2:
-                auditoria = (
-                    "AUDITORÍA ARS: "
-                    "Q=VLOOKUP(CodInstrum→PosicionFinal.cantidad) | "
-                    "R=VLOOKUP(CodInstrum→PosicionFinal.PrecioInicial) | "
-                    "S=Cantidad*PrecioStock (si venta) | "
-                    "T=Bruto+Gastos (si venta) | "
-                    "U=|T|-|S| (resultado) | "
-                    "V=Cantidad+StockInicial (running) | "
-                    "W=Promedio ponderado si compra, sino mantiene precio"
-                )
-            else:
-                prev = row_out - 1
-                auditoria = f"Si D{row_out}=D{prev}: Q=V{prev}, R=W{prev}; sino VLOOKUP. Running stock por especie."
-            ws.cell(row_out, 24, auditoria)
+            # Explicación Cálculo (columna nueva)
+            ws.cell(row_out, 24, f'Q=Stock previo o VLOOKUP(D{row_out}→PosIni si Gallo/PosFin si Visual) | R=Precio previo o VLOOKUP col P | S=I{row_out}*R{row_out} si venta | T=K{row_out}+N{row_out} | U=|T|-|S| | V=I{row_out}+Q{row_out} | W=Promedio ponderado')
             
-            row_out += 1
+            # Chequeado/Auditoría
+            if row_out == 2:
+                auditoria = f"Primera op: Stock y Precio desde {'Posicion Inicial' if trans['origen'] and 'Gallo' in trans['origen'] else 'Posicion Final'}"
+            else:
+                auditoria = f"Running stock: Si mismo código usa stock/precio anterior (V{row_out-1},W{row_out-1})"
+            ws.cell(row_out, 25, auditoria)
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
-        """Crea hoja Resultado Ventas USD."""
+        """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
         ws = wb.create_sheet("Resultado Ventas USD")
         
         # Headers (27 columnas)
@@ -1370,63 +1397,103 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Similar a ARS pero con SEARCH("Dolar",...) 
+        # Recolectar transacciones de Boletos con moneda contiene "Dolar"
         boletos_ws = wb['Boletos']
+        transactions = []
         
-        row_out = 2
         for boletos_row in range(2, boletos_ws.max_row + 1):
-            # Fórmulas que filtran por moneda contiene "Dolar"
-            ws.cell(row_out, 1, f'=Boletos!Q{boletos_row}')
-            ws.cell(row_out, 2, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!A{boletos_row},"")')
-            ws.cell(row_out, 3, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!I{boletos_row},"")')
-            ws.cell(row_out, 4, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!G{boletos_row},"")')
-            ws.cell(row_out, 5, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!B{boletos_row},"")')
-            ws.cell(row_out, 6, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!C{boletos_row},"")')
-            ws.cell(row_out, 7, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!E{boletos_row},"")')
-            ws.cell(row_out, 8, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!F{boletos_row},"")')
-            ws.cell(row_out, 9, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!J{boletos_row},"")')
-            ws.cell(row_out, 10, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!K{boletos_row},"")')
+            moneda_emision = boletos_ws.cell(boletos_row, 18).value  # Col R = moneda_emision
             
-            # Precio estandarizado (ajuste x100 si es nominal)
-            ws.cell(row_out, 11, f'=IF(A{row_out}="visual",IF(U{row_out}*P{row_out}/J{row_out}>80,J{row_out}*100),J{row_out})')
+            # Filtrar solo Dolar (MEP, Cable)
+            if not moneda_emision or 'dolar' not in str(moneda_emision).lower():
+                continue
+            
+            # Extraer valores
+            origen = boletos_ws.cell(boletos_row, 17).value  # Col Q
+            tipo_instrumento = boletos_ws.cell(boletos_row, 1).value
+            instrumento = boletos_ws.cell(boletos_row, 9).value  # Col I
+            cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
+            concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B
+            liquidacion = boletos_ws.cell(boletos_row, 3).value  # Col C
+            moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
+            tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
+            cantidad = boletos_ws.cell(boletos_row, 10).value  # Col J
+            precio = boletos_ws.cell(boletos_row, 11).value  # Col K
+            interes = boletos_ws.cell(boletos_row, 14).value  # Col N
+            tipo_cambio_val = boletos_ws.cell(boletos_row, 12).value  # Col L (puede ser fórmula)
+            gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
+            
+            transactions.append({
+                'origen': origen,
+                'tipo_instrumento': tipo_instrumento,
+                'instrumento': instrumento,
+                'cod_instrum': cod_instrum,
+                'concertacion': concertacion,
+                'liquidacion': liquidacion,
+                'moneda': moneda,
+                'tipo_operacion': tipo_operacion,
+                'cantidad': cantidad,
+                'precio': precio,
+                'interes': interes,
+                'tipo_cambio_val': tipo_cambio_val,
+                'gastos': gastos,
+            })
+        
+        # Escribir transacciones
+        for row_out, trans in enumerate(transactions, start=2):
+            ws.cell(row_out, 1, trans['origen'])
+            ws.cell(row_out, 2, trans['tipo_instrumento'])
+            ws.cell(row_out, 3, trans['instrumento'])
+            ws.cell(row_out, 4, trans['cod_instrum'])
+            ws.cell(row_out, 5, trans['concertacion'])  # Fecha como datetime
+            ws.cell(row_out, 6, trans['liquidacion'])
+            ws.cell(row_out, 7, trans['moneda'])
+            ws.cell(row_out, 8, trans['tipo_operacion'])
+            ws.cell(row_out, 9, trans['cantidad'])
+            ws.cell(row_out, 10, trans['precio'])
+            
+            # Precio estandarizado: Si viene de Visual, multiplicar x100
+            # Si viene de Gallo, dejar como está
+            is_visual = trans['origen'] and 'visual' in str(trans['origen']).lower()
+            if is_visual:
+                ws.cell(row_out, 11, f'=J{row_out}*100')
+            else:
+                ws.cell(row_out, 11, f'=J{row_out}')
             
             # Precio en USD
-            ws.cell(row_out, 12, f'=IF(G{row_out}="Pesos",K{row_out}/P{row_out},K{row_out})')
+            ws.cell(row_out, 12, f'=IF(G{row_out}="Pesos",K{row_out}/O{row_out},K{row_out})')
             
             # Bruto en USD
             ws.cell(row_out, 13, f'=I{row_out}*L{row_out}')
             
-            ws.cell(row_out, 14, 0)  # Interés
+            ws.cell(row_out, 14, trans['interes'] if trans['interes'] else 0)
             
-            # Tipo cambio (referencia USD=1)
-            ws.cell(row_out, 15, f'=IF(G{row_out}="Pesos",IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!L{boletos_row},"")/P{row_out},1)')
+            # Tipo cambio
+            ws.cell(row_out, 15, trans['tipo_cambio_val'])
             
-            # Valor USD Dia (referencia manual o lookup)
-            ws.cell(row_out, 16, "")
+            # Valor USD Dia: VLOOKUP con fecha en Cotizacion Dolar Historica
+            ws.cell(row_out, 16, f'=IFERROR(VLOOKUP(E{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0)')
             
-            ws.cell(row_out, 17, f'=IF(SEARCH("Dolar",Boletos!R{boletos_row}),Boletos!O{boletos_row},"")')
+            ws.cell(row_out, 17, trans['gastos'] if trans['gastos'] else 0)
             ws.cell(row_out, 18, 0)  # IVA
             ws.cell(row_out, 19, "")  # Resultado
             
             # Running Stock Logic para USD:
-            # - Primera fila (row_out=2): VLOOKUP a Posicion Final Gallo
-            # - Filas siguientes: Si mismo Cod.Instrum que fila anterior, usar Stock Final anterior
-            
             if row_out == 2:
-                # Primera fila: siempre VLOOKUP
-                ws.cell(row_out, 20, f'=IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)')
-                ws.cell(row_out, 21, f'=IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:G,7,FALSE),0)/P{row_out}')
+                # Primera fila: VLOOKUP a Posicion Inicial si Gallo, Posicion Final si Visual
+                ws.cell(row_out, 20, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                # Precio Stock USD: Si P{row_out}=0, evitar división
+                ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))/P{row_out})')
             else:
-                # Filas siguientes: condicional
                 prev = row_out - 1
-                ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:G,7,FALSE),0)/P{row_out})')
+                ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
+                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))/P{row_out}))')
             
             # Costo por venta
             ws.cell(row_out, 22, f'=IFERROR(IF(I{row_out}<0,I{row_out}*U{row_out},0),"")')
             
             # Neto Calculado
-            ws.cell(row_out, 23, f'=IF(V{row_out}<>0,M{row_out}-Q{row_out},0)')
+            ws.cell(row_out, 23, f'=M{row_out}-Q{row_out}')
             
             # Resultado Calculado
             ws.cell(row_out, 24, f'=IFERROR(IF(V{row_out}<>0,ABS(W{row_out})-ABS(V{row_out}),0),0)')
@@ -1434,27 +1501,15 @@ class GalloVisualMerger:
             # Cantidad Stock Final
             ws.cell(row_out, 25, f'=I{row_out}+T{row_out}')
             
-            # Precio Stock Final
-            ws.cell(row_out, 26, f'=IF(Y{row_out}=0,0,IF(I{row_out}>0,(I{row_out}*L{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out}),U{row_out}))')
+            # Precio Stock Final: Evitar DIV/0!
+            ws.cell(row_out, 26, f'=IF(Y{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+T{row_out})=0,0,(I{row_out}*L{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
             
             # Comentarios/Auditoría USD
             if row_out == 2:
-                auditoria = (
-                    "AUDITORÍA USD: "
-                    "T=VLOOKUP(CodInstrum→PosicionFinal.cantidad) | "
-                    "U=VLOOKUP(CodInstrum→PreciosIniciales)/TipoCambio | "
-                    "V=Cantidad*PrecioStock (si venta) | "
-                    "W=BrutoUSD-Gastos (si venta) | "
-                    "X=|W|-|V| (resultado) | "
-                    "Y=Cantidad+StockInicial (running) | "
-                    "Z=Promedio ponderado si compra"
-                )
+                auditoria = f"Primera op USD: Stock desde {'Posicion Inicial' if trans['origen'] and 'Gallo' in trans['origen'] else 'Posicion Final'}. K=Precio×100 si Visual. P=VLOOKUP(E→Cotiz Dolar Hist)"
             else:
-                prev = row_out - 1
-                auditoria = f"Si D{row_out}=D{prev}: T=Y{prev}, U=Z{prev}; sino VLOOKUP. Running stock USD por especie."
+                auditoria = f"Running: Si mismo código usa Y{row_out-1},Z{row_out-1}. U,Z con IF(P=0,0,...) para evitar DIV/0!"
             ws.cell(row_out, 27, auditoria)
-            
-            row_out += 1
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS."""
