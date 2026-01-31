@@ -964,16 +964,23 @@ class GalloVisualMerger:
                 if fecha_dt and venc_dt:
                     plazo = (venc_dt - fecha_dt).days
                 
-                # Interés según moneda
+                # Interés según moneda (para interes_devengado)
                 interes = interes_pesos if moneda == "Pesos" else interes_usd
                 interes = float(interes) if interes else 0
                 
-                # Gastos según moneda
-                gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
-                gastos = float(gastos) if gastos else 0
+                # Gastos: tomar el que tenga valor (cualquiera de los dos)
+                gastos = float(gastos_pesos) if gastos_pesos else (float(gastos_usd) if gastos_usd else 0)
                 
-                # Costo financiero = -(intereses + gastos)
-                costo_financiero = -(interes + gastos)
+                # Interes Bruto = Futuro - Contado
+                try:
+                    contado_val = float(colocado) if colocado else 0
+                    futuro_val = float(al_vencimiento) if al_vencimiento else 0
+                    interes_bruto = futuro_val - contado_val
+                except:
+                    interes_bruto = 0
+                
+                # Costo financiero = -interes_bruto + aranceles
+                costo_financiero = -interes_bruto + gastos
                 
                 auditoria = f"Origen: Gallo-{sheet_name}"
                 
@@ -987,7 +994,7 @@ class GalloVisualMerger:
                     'futuro': al_vencimiento,
                     'tipo_cambio': tipo_cambio,
                     'tasa': None,  # No disponible en Gallo
-                    'interes_bruto': None,  # No disponible en Gallo
+                    'interes_bruto': interes_bruto,  # Calculado: futuro - contado
                     'interes_devengado': interes,
                     'aranceles': gastos,
                     'derechos': None,  # No disponible en Gallo
@@ -1277,12 +1284,19 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Recolectar transacciones de Boletos con moneda = Pesos
+        # Recolectar transacciones de Boletos con moneda == "Pesos"
         boletos_ws = wb['Boletos']
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
-            moneda_emision = boletos_ws.cell(boletos_row, 18).value  # Col R = moneda_emision
+            # Leer cod_instrum y buscar moneda_emision en cache
+            cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
+            
+            # Obtener moneda_emision del cache
+            moneda_emision = None
+            if cod_clean and cod_clean in self._especies_visual_cache:
+                moneda_emision = self._especies_visual_cache[cod_clean].get('moneda_emision')
             
             # Filtrar solo Pesos
             if moneda_emision != "Pesos":
@@ -1402,7 +1416,14 @@ class GalloVisualMerger:
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
-            moneda_emision = boletos_ws.cell(boletos_row, 18).value  # Col R = moneda_emision
+            # Leer cod_instrum y buscar moneda_emision en cache
+            cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
+            
+            # Obtener moneda_emision del cache
+            moneda_emision = None
+            if cod_clean and cod_clean in self._especies_visual_cache:
+                moneda_emision = self._especies_visual_cache[cod_clean].get('moneda_emision')
             
             # Filtrar solo Dolar (MEP, Cable)
             if not moneda_emision or 'dolar' not in str(moneda_emision).lower():
