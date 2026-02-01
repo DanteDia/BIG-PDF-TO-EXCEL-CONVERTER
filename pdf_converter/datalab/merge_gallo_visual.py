@@ -1271,14 +1271,14 @@ class GalloVisualMerger:
         """Crea hoja Resultado Ventas ARS con transacciones de Boletos filtradas por Pesos."""
         ws = wb.create_sheet("Resultado Ventas ARS")
         
-        # Headers (25 columnas - agregamos columna explicativa)
+        # Headers (26 columnas - agregamos columna explicativa detallada)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
                    'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación',
                    'Cantidad', 'Precio', 'Bruto', 'Interés', 'Tipo de Cambio',
                    'Gastos', 'IVA', 'Resultado', 'Cantidad Stock Inicial',
                    'Precio Stock Inicial', 'Costo por venta(gallo)', 'Neto Calculado(visual)',
                    'Resultado Calculado(final)', 'Cantidad de Stock Final', 
-                   'Precio Stock Final', 'Explicación Cálculo', 'chequeado']
+                   'Precio Stock Final', 'Explicación Q', 'Explicación R-U', 'chequeado']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1289,39 +1289,59 @@ class GalloVisualMerger:
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
-            # Leer cod_instrum y buscar moneda_emision en cache
+            # Leer cod_instrum y buscar datos en cache
             cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
             cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
             
-            # Obtener moneda_emision del cache
-            moneda_emision = None
-            if cod_clean and cod_clean in self._especies_visual_cache:
-                moneda_emision = self._especies_visual_cache[cod_clean].get('moneda_emision')
+            # Obtener datos del cache
+            especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
+            moneda_emision = especie_data.get('moneda_emision')
             
             # Filtrar solo Pesos
             if moneda_emision != "Pesos":
                 continue
             
-            # Extraer valores
-            origen = boletos_ws.cell(boletos_row, 17).value  # Col Q
-            tipo_instrumento = boletos_ws.cell(boletos_row, 1).value
-            instrumento = boletos_ws.cell(boletos_row, 9).value  # Col I
-            cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
-            concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B
+            # Extraer valores REALES (no fórmulas)
+            origen = boletos_ws.cell(boletos_row, 17).value  # Col Q - Origen (texto)
+            
+            # Tipo de instrumento: obtener del cache si es fórmula
+            tipo_instrumento_cell = boletos_ws.cell(boletos_row, 1).value
+            if isinstance(tipo_instrumento_cell, str) and tipo_instrumento_cell.startswith('='):
+                tipo_instrumento = especie_data.get('tipo_especie', '')
+            else:
+                tipo_instrumento = tipo_instrumento_cell
+            
+            # Instrumento: obtener del cache si es fórmula
+            instrumento_cell = boletos_ws.cell(boletos_row, 9).value
+            if isinstance(instrumento_cell, str) and instrumento_cell.startswith('='):
+                instrumento = especie_data.get('nombre_con_moneda', '')
+            else:
+                instrumento = instrumento_cell
+            
+            # Valores directos
+            concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B - fecha
             liquidacion = boletos_ws.cell(boletos_row, 3).value  # Col C
             moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
             tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
             cantidad = boletos_ws.cell(boletos_row, 10).value  # Col J
             precio = boletos_ws.cell(boletos_row, 11).value  # Col K
-            bruto_formula = boletos_ws.cell(boletos_row, 13).value  # Col M (puede ser fórmula)
             interes = boletos_ws.cell(boletos_row, 14).value  # Col N
-            tipo_cambio_formula = boletos_ws.cell(boletos_row, 12).value  # Col L
             gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
+            especie_raw = boletos_ws.cell(boletos_row, 8).value  # Col H - instrumento crudo
+            
+            # Calcular Bruto = Cantidad * Precio
+            try:
+                bruto = float(cantidad) * float(precio) if cantidad and precio else 0
+            except:
+                bruto = 0
+            
+            # Tipo de cambio: para Pesos siempre es 1
+            tipo_cambio = 1
             
             transactions.append({
                 'origen': origen,
                 'tipo_instrumento': tipo_instrumento,
-                'instrumento': instrumento,
+                'instrumento': instrumento if instrumento else especie_raw,
                 'cod_instrum': cod_instrum,
                 'concertacion': concertacion,
                 'liquidacion': liquidacion,
@@ -1329,75 +1349,104 @@ class GalloVisualMerger:
                 'tipo_operacion': tipo_operacion,
                 'cantidad': cantidad,
                 'precio': precio,
-                'bruto_formula': bruto_formula,
-                'interes': interes,
-                'tipo_cambio_formula': tipo_cambio_formula,
-                'gastos': gastos,
+                'bruto': bruto,
+                'interes': interes if interes else 0,
+                'tipo_cambio': tipo_cambio,
+                'gastos': gastos if gastos else 0,
             })
         
-        # Escribir transacciones
+        # Escribir transacciones con VALORES (no fórmulas excepto para cálculos)
         for row_out, trans in enumerate(transactions, start=2):
+            # Columnas A-N: Valores directos
             ws.cell(row_out, 1, trans['origen'])
             ws.cell(row_out, 2, trans['tipo_instrumento'])
             ws.cell(row_out, 3, trans['instrumento'])
             ws.cell(row_out, 4, trans['cod_instrum'])
-            ws.cell(row_out, 5, trans['concertacion'])  # Fecha como datetime
+            ws.cell(row_out, 5, trans['concertacion'])  # datetime
             ws.cell(row_out, 6, trans['liquidacion'])
             ws.cell(row_out, 7, trans['moneda'])
             ws.cell(row_out, 8, trans['tipo_operacion'])
             ws.cell(row_out, 9, trans['cantidad'])
             ws.cell(row_out, 10, trans['precio'])
-            ws.cell(row_out, 11, trans['bruto_formula'])
+            ws.cell(row_out, 11, trans['bruto'])  # Valor calculado, no fórmula
             ws.cell(row_out, 12, trans['interes'])
-            ws.cell(row_out, 13, trans['tipo_cambio_formula'])
+            ws.cell(row_out, 13, trans['tipo_cambio'])  # Valor 1, no fórmula
             ws.cell(row_out, 14, trans['gastos'])
             
-            # IVA
-            ws.cell(row_out, 15, f'=IF(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')
+            # Col O: IVA
+            ws.cell(row_out, 15, f'=IF(L{row_out}>0,L{row_out}*0.1736,L{row_out}*-0.1736)')
             
-            # Resultado (vacío)
+            # Col P: Resultado (vacío por ahora)
             ws.cell(row_out, 16, "")
             
-            # Running Stock Logic:
+            # COLUMNAS Q-W: Fórmulas de Running Stock
+            cod = trans['cod_instrum']
+            origen_val = trans['origen'] or ""
+            is_gallo = 'gallo' in origen_val.lower() if origen_val else False
+            
+            # Buscar cantidad y precio inicial desde cache de posición
+            pos_inicial_cantidad = 0
+            pos_inicial_precio = 0
+            if cod:
+                # Buscar en Posicion Inicial Gallo o Posicion Final según origen
+                if is_gallo and 'Posicion Inicial Gallo' in wb.sheetnames:
+                    pos_ws = wb['Posicion Inicial Gallo']
+                    for r in range(2, pos_ws.max_row + 1):
+                        if pos_ws.cell(r, 4).value == cod:  # Col D
+                            pos_inicial_cantidad = pos_ws.cell(r, 9).value or 0  # Col I
+                            pos_inicial_precio = pos_ws.cell(r, 16).value or 0  # Col P
+                            break
+                elif not is_gallo and 'Posicion Final Gallo' in wb.sheetnames:
+                    pos_ws = wb['Posicion Final Gallo']
+                    for r in range(2, pos_ws.max_row + 1):
+                        if pos_ws.cell(r, 4).value == cod:  # Col D
+                            pos_inicial_cantidad = pos_ws.cell(r, 9).value or 0  # Col I
+                            pos_inicial_precio = pos_ws.cell(r, 16).value or 0  # Col P
+                            break
+            
+            # Col Q: Cantidad Stock Inicial
             if row_out == 2:
-                # Primera fila: VLOOKUP a Posicion Inicial si Gallo, Posicion Final si Visual
                 ws.cell(row_out, 17, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                # Col R: Precio Stock Inicial
                 ws.cell(row_out, 18, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))')
+                explicacion_q = f"VLOOKUP(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col I)"
             else:
                 prev = row_out - 1
                 ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
                 ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0)))')
+                explicacion_q = f"SI D{row_out}=D{prev}: V{prev}, SINO: VLOOKUP(D{row_out}→Posicion col I)"
             
-            # Costo por venta
-            ws.cell(row_out, 19, f'=IFERROR(IF(I{row_out}<0,I{row_out}*R{row_out},0),"")')
+            # Col S: Costo por venta = Cantidad * Precio Stock (si venta, cantidad < 0)
+            ws.cell(row_out, 19, f'=IF(I{row_out}<0,I{row_out}*R{row_out},0)')
             
-            # Neto Calculado (para todas las ops: K+N)
-            ws.cell(row_out, 20, f'=K{row_out}+N{row_out}')
+            # Col T: Neto Calculado = Bruto + Interés
+            ws.cell(row_out, 20, f'=K{row_out}+L{row_out}')
             
-            # Resultado Calculado
+            # Col U: Resultado Calculado = |Neto| - |Costo|
             ws.cell(row_out, 21, f'=IF(S{row_out}<>0,ABS(T{row_out})-ABS(S{row_out}),0)')
             
-            # Cantidad Stock Final (running)
+            # Col V: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 22, f'=I{row_out}+Q{row_out}')
             
-            # Precio Stock Final (promedio ponderado)
-            ws.cell(row_out, 23, f'=IF(V{row_out}=0,0,IF(I{row_out}>0,(I{row_out}*J{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out}),R{row_out}))')
+            # Col W: Precio Stock Final (promedio ponderado si compra, mantiene si venta)
+            ws.cell(row_out, 23, f'=IF(V{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+Q{row_out})=0,0,(I{row_out}*J{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out})),R{row_out}))')
             
-            # Explicación Cálculo (columna nueva)
-            ws.cell(row_out, 24, f'Q=Stock previo o VLOOKUP(D{row_out}→PosIni si Gallo/PosFin si Visual) | R=Precio previo o VLOOKUP col P | S=I{row_out}*R{row_out} si venta | T=K{row_out}+N{row_out} | U=|T|-|S| | V=I{row_out}+Q{row_out} | W=Promedio ponderado')
+            # Col X: Explicación Q (específica para esta fila)
+            ws.cell(row_out, 24, explicacion_q)
             
-            # Chequeado/Auditoría
-            if row_out == 2:
-                auditoria = f"Primera op: Stock y Precio desde {'Posicion Inicial' if trans['origen'] and 'Gallo' in trans['origen'] else 'Posicion Final'}"
-            else:
-                auditoria = f"Running stock: Si mismo código usa stock/precio anterior (V{row_out-1},W{row_out-1})"
-            ws.cell(row_out, 25, auditoria)
+            # Col Y: Explicación R-U (específica para esta fila)
+            cantidad_val = trans['cantidad'] or 0
+            explicacion_rstu = f"R=Precio stock previo | S={cantidad_val}*R{row_out}={cantidad_val}*[stock price] | T=K{row_out}+L{row_out}={trans['bruto']}+{trans['interes']} | U=|T{row_out}|-|S{row_out}|"
+            ws.cell(row_out, 25, explicacion_rstu)
+            
+            # Col Z: Chequeado
+            ws.cell(row_out, 26, f"Origen: {trans['origen']} | Cod: {cod}")
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
         """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
         ws = wb.create_sheet("Resultado Ventas USD")
         
-        # Headers (27 columnas)
+        # Headers (28 columnas - agregamos explicación detallada)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
                    'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación',
                    'Cantidad', 'Precio', 'Precio Standarizado', 'Precio Standarizado en USD',
@@ -1405,7 +1454,7 @@ class GalloVisualMerger:
                    'Gastos', 'IVA', 'Resultado', 'Cantidad Stock Inicial',
                    'Precio Stock USD', 'Costo por venta(gallo)', 'Neto Calculado(visual)',
                    'Resultado Calculado(final)', 'Cantidad de Stock Final',
-                   'Precio Stock Final', 'Comentarios']
+                   'Precio Stock Final', 'Explicación T-Z', 'Auditoría']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1416,38 +1465,56 @@ class GalloVisualMerger:
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
-            # Leer cod_instrum y buscar moneda_emision en cache
+            # Leer cod_instrum y buscar datos en cache
             cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
             cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
             
-            # Obtener moneda_emision del cache
-            moneda_emision = None
-            if cod_clean and cod_clean in self._especies_visual_cache:
-                moneda_emision = self._especies_visual_cache[cod_clean].get('moneda_emision')
+            # Obtener datos del cache
+            especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
+            moneda_emision = especie_data.get('moneda_emision')
             
             # Filtrar solo Dolar (MEP, Cable)
             if not moneda_emision or 'dolar' not in str(moneda_emision).lower():
                 continue
             
-            # Extraer valores
-            origen = boletos_ws.cell(boletos_row, 17).value  # Col Q
-            tipo_instrumento = boletos_ws.cell(boletos_row, 1).value
-            instrumento = boletos_ws.cell(boletos_row, 9).value  # Col I
-            cod_instrum = boletos_ws.cell(boletos_row, 7).value  # Col G
-            concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B
+            # Extraer valores REALES (no fórmulas)
+            origen = boletos_ws.cell(boletos_row, 17).value  # Col Q - Origen (texto)
+            
+            # Tipo de instrumento: obtener del cache si es fórmula
+            tipo_instrumento_cell = boletos_ws.cell(boletos_row, 1).value
+            if isinstance(tipo_instrumento_cell, str) and tipo_instrumento_cell.startswith('='):
+                tipo_instrumento = especie_data.get('tipo_especie', '')
+            else:
+                tipo_instrumento = tipo_instrumento_cell
+            
+            # Instrumento: obtener del cache si es fórmula
+            instrumento_cell = boletos_ws.cell(boletos_row, 9).value
+            if isinstance(instrumento_cell, str) and instrumento_cell.startswith('='):
+                instrumento = especie_data.get('nombre_con_moneda', '')
+            else:
+                instrumento = instrumento_cell
+            
+            # Valores directos
+            concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B - fecha
             liquidacion = boletos_ws.cell(boletos_row, 3).value  # Col C
             moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
             tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
             cantidad = boletos_ws.cell(boletos_row, 10).value  # Col J
             precio = boletos_ws.cell(boletos_row, 11).value  # Col K
             interes = boletos_ws.cell(boletos_row, 14).value  # Col N
-            tipo_cambio_val = boletos_ws.cell(boletos_row, 12).value  # Col L (puede ser fórmula)
             gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
+            especie_raw = boletos_ws.cell(boletos_row, 8).value  # Col H - instrumento crudo
+            
+            # Buscar cotización dólar para esta fecha
+            tipo_cambio = 1
+            if isinstance(concertacion, datetime):
+                fecha_key = concertacion.strftime('%Y-%m-%d') if hasattr(concertacion, 'strftime') else str(concertacion)
+                tipo_cambio = self._cotizacion_cache.get(fecha_key, 1) or 1
             
             transactions.append({
                 'origen': origen,
                 'tipo_instrumento': tipo_instrumento,
-                'instrumento': instrumento,
+                'instrumento': instrumento if instrumento else especie_raw,
                 'cod_instrum': cod_instrum,
                 'concertacion': concertacion,
                 'liquidacion': liquidacion,
@@ -1455,82 +1522,99 @@ class GalloVisualMerger:
                 'tipo_operacion': tipo_operacion,
                 'cantidad': cantidad,
                 'precio': precio,
-                'interes': interes,
-                'tipo_cambio_val': tipo_cambio_val,
-                'gastos': gastos,
+                'interes': interes if interes else 0,
+                'tipo_cambio': tipo_cambio,
+                'gastos': gastos if gastos else 0,
             })
         
-        # Escribir transacciones
+        # Escribir transacciones con VALORES (no fórmulas excepto para cálculos)
         for row_out, trans in enumerate(transactions, start=2):
+            origen_val = trans['origen'] or ""
+            is_visual = 'visual' in origen_val.lower() if origen_val else False
+            is_gallo = 'gallo' in origen_val.lower() if origen_val else False
+            
+            # Columnas A-J: Valores directos
             ws.cell(row_out, 1, trans['origen'])
             ws.cell(row_out, 2, trans['tipo_instrumento'])
             ws.cell(row_out, 3, trans['instrumento'])
             ws.cell(row_out, 4, trans['cod_instrum'])
-            ws.cell(row_out, 5, trans['concertacion'])  # Fecha como datetime
+            ws.cell(row_out, 5, trans['concertacion'])  # datetime
             ws.cell(row_out, 6, trans['liquidacion'])
             ws.cell(row_out, 7, trans['moneda'])
             ws.cell(row_out, 8, trans['tipo_operacion'])
             ws.cell(row_out, 9, trans['cantidad'])
             ws.cell(row_out, 10, trans['precio'])
             
-            # Precio estandarizado: Si viene de Visual, multiplicar x100
-            # Si viene de Gallo, dejar como está
-            is_visual = trans['origen'] and 'visual' in str(trans['origen']).lower()
-            if is_visual:
-                ws.cell(row_out, 11, f'=J{row_out}*100')
-            else:
-                ws.cell(row_out, 11, f'=J{row_out}')
+            # Col K: Precio Standarizado (x100 si Visual)
+            precio_val = trans['precio'] or 0
+            try:
+                precio_std = float(precio_val) * 100 if is_visual else float(precio_val)
+            except:
+                precio_std = 0
+            ws.cell(row_out, 11, precio_std)  # Valor, no fórmula
             
-            # Precio en USD
-            ws.cell(row_out, 12, f'=IF(G{row_out}="Pesos",K{row_out}/O{row_out},K{row_out})')
+            # Col L: Precio Standarizado en USD = K / P (Valor USD Dia), NO col O
+            # Primero escribimos P, luego L como fórmula
+            ws.cell(row_out, 12, f'=IF(P{row_out}=0,K{row_out},K{row_out}/P{row_out})')
             
-            # Bruto en USD
+            # Col M: Bruto en USD = Cantidad * Precio USD
             ws.cell(row_out, 13, f'=I{row_out}*L{row_out}')
             
-            ws.cell(row_out, 14, trans['interes'] if trans['interes'] else 0)
+            # Col N: Interés
+            ws.cell(row_out, 14, trans['interes'])
             
-            # Tipo cambio
-            ws.cell(row_out, 15, trans['tipo_cambio_val'])
+            # Col O: Tipo de Cambio (valor del cache)
+            ws.cell(row_out, 15, trans['tipo_cambio'])
             
-            # Valor USD Dia: VLOOKUP con fecha en Cotizacion Dolar Historica
+            # Col P: Valor USD Dia - VLOOKUP con fecha
             ws.cell(row_out, 16, f'=IFERROR(VLOOKUP(E{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0)')
             
-            ws.cell(row_out, 17, trans['gastos'] if trans['gastos'] else 0)
-            ws.cell(row_out, 18, 0)  # IVA
-            ws.cell(row_out, 19, "")  # Resultado
+            # Col Q: Gastos
+            ws.cell(row_out, 17, trans['gastos'])
             
-            # Running Stock Logic para USD:
+            # Col R: IVA
+            ws.cell(row_out, 18, 0)
+            
+            # Col S: Resultado (vacío)
+            ws.cell(row_out, 19, "")
+            
+            # COLUMNAS T-Z: Fórmulas de Running Stock
+            cod = trans['cod_instrum']
+            
+            # Col T: Cantidad Stock Inicial
             if row_out == 2:
-                # Primera fila: VLOOKUP a Posicion Inicial si Gallo, Posicion Final si Visual
                 ws.cell(row_out, 20, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                # Precio Stock USD: Si P{row_out}=0, evitar división
+                # Col U: Precio Stock USD = Precio Posición / Valor USD Dia
                 ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))/P{row_out})')
+                explicacion_t = f"T=VLOOKUP(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col I)"
             else:
                 prev = row_out - 1
                 ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
                 ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))/P{row_out}))')
+                explicacion_t = f"SI D{row_out}=D{prev}: Y{prev}, SINO: VLOOKUP"
             
-            # Costo por venta
-            ws.cell(row_out, 22, f'=IFERROR(IF(I{row_out}<0,I{row_out}*U{row_out},0),"")')
+            # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
+            ws.cell(row_out, 22, f'=IF(I{row_out}<0,I{row_out}*U{row_out},0)')
             
-            # Neto Calculado
+            # Col W: Neto Calculado = Bruto USD - Gastos
             ws.cell(row_out, 23, f'=M{row_out}-Q{row_out}')
             
-            # Resultado Calculado
-            ws.cell(row_out, 24, f'=IFERROR(IF(V{row_out}<>0,ABS(W{row_out})-ABS(V{row_out}),0),0)')
+            # Col X: Resultado Calculado = |Neto| - |Costo|
+            ws.cell(row_out, 24, f'=IF(V{row_out}<>0,ABS(W{row_out})-ABS(V{row_out}),0)')
             
-            # Cantidad Stock Final
+            # Col Y: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 25, f'=I{row_out}+T{row_out}')
             
-            # Precio Stock Final: Evitar DIV/0!
+            # Col Z: Precio Stock Final (promedio ponderado)
             ws.cell(row_out, 26, f'=IF(Y{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+T{row_out})=0,0,(I{row_out}*L{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
             
-            # Comentarios/Auditoría USD
-            if row_out == 2:
-                auditoria = f"Primera op USD: Stock desde {'Posicion Inicial' if trans['origen'] and 'Gallo' in trans['origen'] else 'Posicion Final'}. K=Precio×100 si Visual. P=VLOOKUP(E→Cotiz Dolar Hist)"
-            else:
-                auditoria = f"Running: Si mismo código usa Y{row_out-1},Z{row_out-1}. U,Z con IF(P=0,0,...) para evitar DIV/0!"
-            ws.cell(row_out, 27, auditoria)
+            # Col AA: Explicación T-Z
+            cantidad_val = trans['cantidad'] or 0
+            explicacion_full = f"{explicacion_t} | U=PrecioPos/P{row_out} | V={cantidad_val}*U si venta | W=M-Q | X=|W|-|V| | Y=I+T | Z=Promedio"
+            ws.cell(row_out, 27, explicacion_full)
+            
+            # Col AB: Auditoría
+            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K/P(ValorUSDDia)")
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS."""
