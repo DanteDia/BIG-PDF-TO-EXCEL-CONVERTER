@@ -35,6 +35,7 @@ from pdf_converter.datalab import DatalabClient
 from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
 from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postprocess_visual_workbook
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
+from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
 from openpyxl import load_workbook
 
 # Page config
@@ -409,6 +410,61 @@ if st.session_state.processed_files is not None:
             type="primary",
             key='download_merged'
         )
+        
+        # ==================== EXPORTAR A PDF ====================
+        st.markdown("---")
+        st.markdown("### 📄 Exportar a PDF (Formato Visual)")
+        
+        col_pdf1, col_pdf2 = st.columns(2)
+        with col_pdf1:
+            pdf_periodo_inicio = st.text_input("Inicio del Período", value="Junio 1", key="pdf_periodo_inicio")
+        with col_pdf2:
+            pdf_periodo_fin = st.text_input("Fin del Período", value="Diciembre 31", key="pdf_periodo_fin")
+        
+        pdf_anio = st.number_input("Año", value=datetime.now().year, min_value=2020, max_value=2030, key="pdf_anio")
+        
+        if st.button("🔄 Generar PDF", use_container_width=True, key="gen_pdf"):
+            try:
+                with st.spinner("Generando PDF..."):
+                    # Guardar Excel temporalmente
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+                        tmp.write(st.session_state.processed_files['merged'])
+                        tmp_excel_path = tmp.name
+                    
+                    # Crear exportador
+                    cliente_info = {
+                        'numero': comitente_num or 'XXXXX',
+                        'nombre': comitente_name or 'CLIENTE'
+                    }
+                    exporter = ExcelToPdfExporter(tmp_excel_path, cliente_info)
+                    exporter.periodo_inicio = pdf_periodo_inicio
+                    exporter.periodo_fin = pdf_periodo_fin
+                    exporter.anio = int(pdf_anio)
+                    
+                    # Generar PDF
+                    pdf_bytes = exporter.export_to_pdf()
+                    
+                    # Limpiar temporal
+                    os.unlink(tmp_excel_path)
+                    
+                    # Guardar en session
+                    st.session_state.processed_files['pdf'] = pdf_bytes
+                    st.success("✅ PDF generado correctamente")
+            except Exception as e:
+                st.error(f"Error generando PDF: {str(e)}")
+        
+        # Botón de descarga del PDF
+        if 'pdf' in st.session_state.processed_files:
+            pdf_filename = merged_filename.replace('.xlsx', '.pdf')
+            st.download_button(
+                label="📄 Descargar PDF",
+                data=st.session_state.processed_files['pdf'],
+                file_name=pdf_filename,
+                mime="application/pdf",
+                use_container_width=True,
+                key='download_pdf'
+            )
     
     # Preview
     st.markdown("### 👁️ Vista Previa")
