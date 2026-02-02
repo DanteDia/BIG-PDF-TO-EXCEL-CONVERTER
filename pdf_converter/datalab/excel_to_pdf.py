@@ -694,33 +694,86 @@ class ExcelToPdfExporter:
         return elements
     
     def _calculate_ventas_total(self, sheet_name: str) -> float:
-        """Calcula el total de ventas de una hoja de Resultado Ventas.
+        """Calcula el resultado real de ventas usando running stock.
         
-        Como las fórmulas no se evalúan, calculamos Neto - Costo simplificado.
-        Para ventas (cantidad < 0): usamos el valor Bruto como aproximación.
+        Implementa el cálculo de running stock para obtener el precio promedio
+        ponderado de compra y calcular el resultado real de cada venta.
         """
+        from collections import defaultdict
+        
         if sheet_name not in self.wb.sheetnames:
             return 0
         
         ws = self.wb[sheet_name]
-        total = 0
         
-        # Columnas: I=Cantidad(9), K=Bruto(11), P=Resultado(16)
+        # Agrupar transacciones por código de instrumento
+        transacciones_por_cod = defaultdict(list)
+        
         for row in range(2, ws.max_row + 1):
-            cantidad = ws.cell(row, 9).value
-            resultado = ws.cell(row, 16).value  # Columna P: Resultado directo
+            cod = ws.cell(row, 4).value  # Cod.Instrum
+            cantidad = ws.cell(row, 9).value or 0
+            precio = ws.cell(row, 10).value or 0
+            bruto = ws.cell(row, 11).value or 0
+            interes = ws.cell(row, 12).value or 0
             
-            # Si hay resultado directo, usarlo
-            if resultado and isinstance(resultado, (int, float)):
-                total += resultado
-            elif cantidad and isinstance(cantidad, (int, float)) and cantidad < 0:
-                # Para ventas sin resultado directo, usar Bruto como aproximación
-                bruto = ws.cell(row, 11).value
-                if bruto and isinstance(bruto, (int, float)):
-                    # El bruto ya es negativo para ventas, queremos el valor absoluto
-                    total += abs(bruto)
+            # Asegurar que son números
+            if not isinstance(cantidad, (int, float)):
+                try:
+                    cantidad = float(cantidad) if cantidad else 0
+                except:
+                    cantidad = 0
+            if not isinstance(precio, (int, float)):
+                try:
+                    precio = float(precio) if precio else 0
+                except:
+                    precio = 0
+            if not isinstance(bruto, (int, float)):
+                try:
+                    bruto = float(bruto) if bruto else 0
+                except:
+                    bruto = 0
+            if not isinstance(interes, (int, float)):
+                try:
+                    interes = float(interes) if interes else 0
+                except:
+                    interes = 0
+            
+            if cod:
+                transacciones_por_cod[cod].append({
+                    'cantidad': cantidad,
+                    'precio': precio,
+                    'bruto': bruto,
+                    'interes': interes,
+                    'neto': bruto + interes
+                })
         
-        return total
+        resultado_total = 0
+        
+        for cod, transacciones in transacciones_por_cod.items():
+            stock_cantidad = 0
+            stock_precio_promedio = 0
+            
+            for t in transacciones:
+                cantidad = t['cantidad']
+                precio = t['precio']
+                neto = t['neto']
+                
+                if cantidad > 0:  # COMPRA
+                    # Actualizar precio promedio ponderado
+                    valor_anterior = stock_cantidad * stock_precio_promedio
+                    valor_nuevo = cantidad * precio
+                    stock_cantidad += cantidad
+                    if stock_cantidad > 0:
+                        stock_precio_promedio = (valor_anterior + valor_nuevo) / stock_cantidad
+                
+                elif cantidad < 0:  # VENTA
+                    # Calcular resultado = Neto - Costo
+                    costo = abs(cantidad) * stock_precio_promedio
+                    resultado = abs(neto) - costo
+                    resultado_total += resultado
+                    stock_cantidad += cantidad  # Resta porque cantidad es negativa
+        
+        return resultado_total
     
     def _calculate_rentas_dividendos(self, sheet_name: str, tipos: List[str]) -> float:
         """Calcula el total de rentas o dividendos de una hoja."""

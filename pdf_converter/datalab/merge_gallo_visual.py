@@ -1966,14 +1966,14 @@ class GalloVisualMerger:
             ws.cell(1, col).font = Font(bold=True)
         
         # Calcular totales ARS
-        ventas_ars = self._sum_column(wb, 'Resultado Ventas ARS', 21)  # Columna U (Resultado)
+        ventas_ars = self._calculate_ventas_real(wb, 'Resultado Ventas ARS')
         rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas', 'AMORTIZACION'])
         dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
         cauciones_int_ars = self._sum_column(wb, 'Cauciones Tomadoras', 10, moneda_filter='Pesos')  # Interés Bruto
         cauciones_cf_ars = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos')  # Costo Financiero
         
         # Calcular totales USD
-        ventas_usd = self._sum_column(wb, 'Resultado Ventas USD', 24)  # Columna X (Resultado USD)
+        ventas_usd = self._calculate_ventas_real(wb, 'Resultado Ventas USD')
         rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
         cauciones_int_usd = self._sum_column(wb, 'Cauciones Tomadoras', 10, moneda_filter='Dolar')
@@ -2056,6 +2056,85 @@ class GalloVisualMerger:
         
         return total
     
+    def _calculate_ventas_real(self, wb: Workbook, sheet_name: str) -> float:
+        """Calcula el resultado real de ventas usando running stock.
+        
+        Implementa el cálculo de running stock para obtener el precio promedio
+        ponderado de compra y calcular el resultado real de cada venta:
+        Resultado = Neto (Bruto + Interés) - Costo (Cantidad * Precio promedio)
+        """
+        from collections import defaultdict
+        
+        if sheet_name not in wb.sheetnames:
+            return 0
+        
+        ws = wb[sheet_name]
+        
+        # Agrupar transacciones por código de instrumento
+        transacciones_por_cod = defaultdict(list)
+        
+        for row in range(2, ws.max_row + 1):
+            cod = ws.cell(row, 4).value  # Cod.Instrum (col D)
+            cantidad_raw = ws.cell(row, 9).value  # Cantidad (col I)
+            precio_raw = ws.cell(row, 10).value  # Precio (col J)
+            bruto_raw = ws.cell(row, 11).value  # Bruto (col K)
+            interes_raw = ws.cell(row, 12).value  # Interés (col L)
+            
+            # Convertir a números, ignorando fórmulas
+            def to_float(val):
+                if val is None:
+                    return 0
+                if isinstance(val, (int, float)):
+                    return float(val)
+                if isinstance(val, str) and val.startswith('='):
+                    return 0  # Es una fórmula, no podemos evaluarla
+                try:
+                    return float(val)
+                except:
+                    return 0
+            
+            cantidad = to_float(cantidad_raw)
+            precio = to_float(precio_raw)
+            bruto = to_float(bruto_raw)
+            interes = to_float(interes_raw)
+            
+            if cod:
+                transacciones_por_cod[cod].append({
+                    'cantidad': cantidad,
+                    'precio': precio,
+                    'bruto': bruto,
+                    'interes': interes,
+                    'neto': bruto + interes
+                })
+        
+        resultado_total = 0
+        
+        for cod, transacciones in transacciones_por_cod.items():
+            stock_cantidad = 0
+            stock_precio_promedio = 0
+            
+            for t in transacciones:
+                cantidad = t['cantidad']
+                precio = t['precio']
+                neto = t['neto']
+                
+                if cantidad > 0:  # COMPRA
+                    # Actualizar precio promedio ponderado
+                    valor_anterior = stock_cantidad * stock_precio_promedio
+                    valor_nuevo = cantidad * precio
+                    stock_cantidad += cantidad
+                    if stock_cantidad > 0:
+                        stock_precio_promedio = (valor_anterior + valor_nuevo) / stock_cantidad
+                
+                elif cantidad < 0:  # VENTA
+                    # Calcular resultado = Neto - Costo
+                    costo = abs(cantidad) * stock_precio_promedio
+                    resultado = abs(neto) - costo
+                    resultado_total += resultado
+                    stock_cantidad += cantidad  # Resta porque cantidad es negativa
+        
+        return resultado_total
+
     def _create_posicion_titulos(self, wb: Workbook):
         """Crea hoja Posicion Titulos con datos de Visual (fuente principal).
         
