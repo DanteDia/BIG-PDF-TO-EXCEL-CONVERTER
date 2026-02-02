@@ -282,16 +282,18 @@ class GalloVisualMerger:
         if tipo_moneda == "Pesos":
             return 1.0
         
-        # Normalizar tipo
-        tipo_key = "Dolar MEP" if "MEP" in tipo_moneda.upper() else "Dolar Cable"
-        
         # Normalizar fecha
         if isinstance(fecha, datetime):
             fecha_key = fecha.date()
         else:
             fecha_key = fecha
         
-        return self._cotizacion_cache.get((fecha_key, tipo_key), 1.0)
+        # Buscar en cache con diferentes variantes del tipo
+        for tipo_key in ["Dolar MEP (local)", "Dolar MEP", "Dolar Cable", tipo_moneda]:
+            if (fecha_key, tipo_key) in self._cotizacion_cache:
+                return self._cotizacion_cache[(fecha_key, tipo_key)]
+        
+        return 1.0
     
     def _generate_ticker_variations(self, ticker: str) -> List[str]:
         """
@@ -1373,8 +1375,8 @@ class GalloVisualMerger:
             ws.cell(row_out, 13, trans['tipo_cambio'])  # Valor 1, no fórmula
             ws.cell(row_out, 14, trans['gastos'])
             
-            # Col O: IVA
-            ws.cell(row_out, 15, f'=IF(L{row_out}>0,L{row_out}*0.1736,L{row_out}*-0.1736)')
+            # Col O: IVA = SI(N>0, N*0.1736, N*-0.1736) basado en Gastos (col N)
+            ws.cell(row_out, 15, f'=IF(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')
             
             # Col P: Resultado (vacío por ahora)
             ws.cell(row_out, 16, "")
@@ -1553,9 +1555,9 @@ class GalloVisualMerger:
                 precio_std = 0
             ws.cell(row_out, 11, precio_std)  # Valor, no fórmula
             
-            # Col L: Precio Standarizado en USD = K / P (Valor USD Dia), NO col O
-            # Primero escribimos P, luego L como fórmula
-            ws.cell(row_out, 12, f'=IF(P{row_out}=0,K{row_out},K{row_out}/P{row_out})')
+            # Col L: Precio Standarizado en USD = K * O (Precio Std * Tipo Cambio)
+            # O = 1 si moneda incluye "dolar", sino 1/P
+            ws.cell(row_out, 12, f'=K{row_out}*O{row_out}')
             
             # Col M: Bruto en USD = Cantidad * Precio USD
             ws.cell(row_out, 13, f'=I{row_out}*L{row_out}')
@@ -1563,8 +1565,12 @@ class GalloVisualMerger:
             # Col N: Interés
             ws.cell(row_out, 14, trans['interes'])
             
-            # Col O: Tipo de Cambio (valor del cache)
-            ws.cell(row_out, 15, trans['tipo_cambio'])
+            # Col O: Tipo de Cambio - Si moneda incluye "dolar" → 1, sino → 1/P (Valor USD Dia)
+            moneda_val = trans['moneda'] or ""
+            if 'dolar' in str(moneda_val).lower():
+                ws.cell(row_out, 15, 1)  # Operaciones en dólares: tipo cambio = 1
+            else:
+                ws.cell(row_out, 15, f'=IF(P{row_out}=0,1,1/P{row_out})')  # Pesos: 1/ValorUSDDia
             
             # Col P: Valor USD Dia - VLOOKUP con fecha
             ws.cell(row_out, 16, f'=IFERROR(VLOOKUP(E{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0)')
@@ -1572,8 +1578,8 @@ class GalloVisualMerger:
             # Col Q: Gastos
             ws.cell(row_out, 17, trans['gastos'])
             
-            # Col R: IVA
-            ws.cell(row_out, 18, 0)
+            # Col R: IVA = SI(Q>0, Q*0.1736, Q*-0.1736) basado en Gastos (col Q)
+            ws.cell(row_out, 18, f'=IF(Q{row_out}>0,Q{row_out}*0.1736,Q{row_out}*-0.1736)')
             
             # Col S: Resultado (vacío)
             ws.cell(row_out, 19, "")
@@ -1617,7 +1623,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K/P(ValorUSDDia)")
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
-        """Crea hoja Rentas Dividendos ARS."""
+        """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados."""
         ws = wb.create_sheet("Rentas Dividendos ARS")
         
         headers = ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento',
@@ -1628,34 +1634,124 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Filtrar de Rentas y Dividendos Gallo por moneda = Pesos
+        # Recolectar datos de Rentas y Dividendos Gallo
         rentas_ws = wb['Rentas y Dividendos Gallo']
+        transactions = []
         
-        row_out = 2
         for rentas_row in range(2, rentas_ws.max_row + 1):
-            # Referencia con filtro por moneda emisión = Pesos
-            ws.cell(row_out, 1, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!I{rentas_row},"")')
-            ws.cell(row_out, 2, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!G{rentas_row},"")')
+            # Obtener cod_instrum y buscar moneda_emision en cache
+            cod_instrum = rentas_ws.cell(rentas_row, 7).value  # Col G
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
             
-            # Categoría (Rentas/Dividendos/AMORTIZACION basado en tipo operación)
-            ws.cell(row_out, 3, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",IF(OR(\'Rentas y Dividendos Gallo\'!F{rentas_row}="RENTA",\'Rentas y Dividendos Gallo\'!F{rentas_row}="AMORTIZACION"),"Rentas","Dividendos"),"")')
+            # Obtener moneda_emision del cache
+            especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
+            moneda_emision = especie_data.get('moneda_emision')
             
-            ws.cell(row_out, 4, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!A{rentas_row},"")')
-            ws.cell(row_out, 5, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!B{rentas_row},"")')
-            ws.cell(row_out, 6, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!C{rentas_row},"")')
-            ws.cell(row_out, 7, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!D{rentas_row},"")')
-            ws.cell(row_out, 8, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!F{rentas_row},"")')
-            ws.cell(row_out, 9, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!J{rentas_row},"")')
-            ws.cell(row_out, 10, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!E{rentas_row},"")')
-            ws.cell(row_out, 11, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!L{rentas_row},"")')
-            ws.cell(row_out, 12, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!O{rentas_row},"")')
-            ws.cell(row_out, 13, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!Q{rentas_row},"")')  # Neto calculado
-            ws.cell(row_out, 14, f'=IF(\'Rentas y Dividendos Gallo\'!S{rentas_row}="Pesos",\'Rentas y Dividendos Gallo\'!R{rentas_row},"")')
+            # Filtrar solo Pesos
+            if moneda_emision != "Pesos":
+                continue
             
-            row_out += 1
+            tipo_operacion = rentas_ws.cell(rentas_row, 6).value  # Col F
+            instrumento = rentas_ws.cell(rentas_row, 8).value  # Col H = Instrumento Crudo
+            
+            # Determinar Categoría basado en tipo operación
+            tipo_op_upper = str(tipo_operacion).upper() if tipo_operacion else ""
+            # Incluir ambas variantes: con y sin tilde
+            if tipo_op_upper in ["RENTA", "AMORTIZACION", "AMORTIZACIÓN"]:
+                categoria = "Rentas"
+            else:
+                categoria = "Dividendos"
+            
+            tipo_instrumento = rentas_ws.cell(rentas_row, 1).value  # Col A (puede ser fórmula)
+            if isinstance(tipo_instrumento, str) and tipo_instrumento.startswith('='):
+                tipo_instrumento = especie_data.get('tipo_especie', '')
+            
+            concertacion = rentas_ws.cell(rentas_row, 2).value  # Col B
+            liquidacion = rentas_ws.cell(rentas_row, 3).value  # Col C
+            nro_ndc = rentas_ws.cell(rentas_row, 4).value  # Col D
+            cantidad = rentas_ws.cell(rentas_row, 10).value  # Col J
+            moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
+            
+            # Calcular gastos = Costo (P) + Gastos (O)
+            costo = rentas_ws.cell(rentas_row, 16).value or 0  # Col P
+            gastos_orig = rentas_ws.cell(rentas_row, 15).value or 0  # Col O
+            gastos = (costo if isinstance(costo, (int, float)) else 0) + (gastos_orig if isinstance(gastos_orig, (int, float)) else 0)
+            
+            # Importe = Resultado (M) - Gastos (O) - Costo (P) como valor, no fórmula
+            resultado = rentas_ws.cell(rentas_row, 13).value or 0  # Col M = Resultado
+            if isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
+                importe = resultado - gastos_orig - (costo if isinstance(costo, (int, float)) else 0)
+            else:
+                importe = 0
+            
+            origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+            
+            # Tipo de Cambio ARS: 1 si Pesos, Valor USD del día si contiene dolar
+            moneda_str = str(moneda).lower() if moneda else ""
+            if moneda == "Pesos" or "peso" in moneda_str:
+                tipo_cambio = 1
+            elif "dolar" in moneda_str or "cable" in moneda_str:
+                # Buscar valor USD del día
+                fecha_conc = concertacion if isinstance(concertacion, datetime) else None
+                tipo_cambio = self._get_cotizacion(fecha_conc, "Dolar MEP") if fecha_conc else 1
+            else:
+                tipo_cambio = 1
+            
+            # Solo agregar si tiene datos válidos
+            if not instrumento and not cod_instrum:
+                continue
+            
+            transactions.append({
+                'instrumento': instrumento,
+                'cod_instrum': cod_instrum,
+                'categoria': categoria,
+                'tipo_instrumento': tipo_instrumento,
+                'concertacion': concertacion,
+                'liquidacion': liquidacion,
+                'nro_ndc': nro_ndc,
+                'tipo_operacion': tipo_operacion,
+                'cantidad': cantidad,
+                'moneda': moneda,
+                'tipo_cambio': tipo_cambio,
+                'gastos': gastos,
+                'importe': importe,
+                'origen': origen,
+            })
+        
+        # Ordenar por cod_instrum y luego por concertación
+        def sort_key(t):
+            cod = t.get('cod_instrum') or 0
+            try:
+                cod_num = int(cod)
+            except:
+                cod_num = 0
+            fecha = t.get('concertacion')
+            if isinstance(fecha, datetime):
+                return (cod_num, fecha)
+            else:
+                return (cod_num, datetime.min)
+        
+        transactions.sort(key=sort_key)
+        
+        # Escribir transacciones
+        for row_out, trans in enumerate(transactions, start=2):
+            ws.cell(row_out, 1, trans['instrumento'])
+            ws.cell(row_out, 2, trans['cod_instrum'])
+            ws.cell(row_out, 3, trans['categoria'])
+            ws.cell(row_out, 4, trans['tipo_instrumento'])
+            ws.cell(row_out, 5, trans['concertacion'])  # datetime
+            ws.cell(row_out, 6, trans['liquidacion'])
+            ws.cell(row_out, 7, trans['nro_ndc'])
+            ws.cell(row_out, 8, trans['tipo_operacion'])
+            ws.cell(row_out, 9, trans['cantidad'])
+            ws.cell(row_out, 10, trans['moneda'])
+            ws.cell(row_out, 11, trans['tipo_cambio'])
+            ws.cell(row_out, 12, trans['gastos'])
+            ws.cell(row_out, 13, trans['importe'])
+            ws.cell(row_out, 14, trans['origen'])
     
     def _create_rentas_dividendos_usd(self, wb: Workbook):
-        """Crea hoja Rentas Dividendos USD."""
+        """Crea hoja Rentas Dividendos USD con valores reales filtrados y ordenados."""
         ws = wb.create_sheet("Rentas Dividendos USD")
         
         headers = ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento',
@@ -1666,28 +1762,121 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Filtrar de Rentas y Dividendos Gallo por moneda contiene Dolar
+        # Recolectar datos de Rentas y Dividendos Gallo
         rentas_ws = wb['Rentas y Dividendos Gallo']
+        transactions = []
         
-        row_out = 2
         for rentas_row in range(2, rentas_ws.max_row + 1):
-            # Usar SEARCH para detectar "Dolar" en moneda emisión
-            ws.cell(row_out, 1, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!I{rentas_row},""),"")')
-            ws.cell(row_out, 2, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!G{rentas_row},""),"")')
-            ws.cell(row_out, 3, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),IF(OR(\'Rentas y Dividendos Gallo\'!F{rentas_row}="RENTA",\'Rentas y Dividendos Gallo\'!F{rentas_row}="AMORTIZACION"),"Rentas","Dividendos"),""),"")')
-            ws.cell(row_out, 4, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!A{rentas_row},""),"")')
-            ws.cell(row_out, 5, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!B{rentas_row},""),"")')
-            ws.cell(row_out, 6, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!C{rentas_row},""),"")')
-            ws.cell(row_out, 7, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!D{rentas_row},""),"")')
-            ws.cell(row_out, 8, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!F{rentas_row},""),"")')
-            ws.cell(row_out, 9, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!J{rentas_row},""),"")')
-            ws.cell(row_out, 10, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!E{rentas_row},""),"")')
-            ws.cell(row_out, 11, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!L{rentas_row},""),"")')
-            ws.cell(row_out, 12, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!O{rentas_row},""),"")')
-            ws.cell(row_out, 13, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!Q{rentas_row},""),"")')
-            ws.cell(row_out, 14, f'=IFERROR(IF(SEARCH("Dolar",\'Rentas y Dividendos Gallo\'!S{rentas_row}),\'Rentas y Dividendos Gallo\'!R{rentas_row},""),"")')
+            # Obtener cod_instrum y buscar moneda_emision en cache
+            cod_instrum = rentas_ws.cell(rentas_row, 7).value  # Col G
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
             
-            row_out += 1
+            # Obtener moneda_emision del cache
+            especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
+            moneda_emision = especie_data.get('moneda_emision')
+            
+            # Filtrar solo Dolar
+            if not moneda_emision or 'dolar' not in str(moneda_emision).lower():
+                continue
+            
+            tipo_operacion = rentas_ws.cell(rentas_row, 6).value  # Col F
+            instrumento = rentas_ws.cell(rentas_row, 8).value  # Col H = Instrumento Crudo
+            
+            # Determinar Categoría basado en tipo operación
+            tipo_op_upper = str(tipo_operacion).upper() if tipo_operacion else ""
+            # Incluir ambas variantes: con y sin tilde
+            if tipo_op_upper in ["RENTA", "AMORTIZACION", "AMORTIZACIÓN"]:
+                categoria = "Rentas"
+            else:
+                categoria = "Dividendos"
+            
+            tipo_instrumento = rentas_ws.cell(rentas_row, 1).value  # Col A (puede ser fórmula)
+            if isinstance(tipo_instrumento, str) and tipo_instrumento.startswith('='):
+                tipo_instrumento = especie_data.get('tipo_especie', '')
+            
+            concertacion = rentas_ws.cell(rentas_row, 2).value  # Col B
+            liquidacion = rentas_ws.cell(rentas_row, 3).value  # Col C
+            nro_ndc = rentas_ws.cell(rentas_row, 4).value  # Col D
+            cantidad = rentas_ws.cell(rentas_row, 10).value  # Col J
+            moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
+            
+            # Calcular gastos = Costo (P) + Gastos (O)
+            costo = rentas_ws.cell(rentas_row, 16).value or 0  # Col P
+            gastos_orig = rentas_ws.cell(rentas_row, 15).value or 0  # Col O
+            gastos = (costo if isinstance(costo, (int, float)) else 0) + (gastos_orig if isinstance(gastos_orig, (int, float)) else 0)
+            
+            # Importe = Resultado (M) - Gastos (O) - Costo (P) como valor, no fórmula
+            resultado = rentas_ws.cell(rentas_row, 13).value or 0  # Col M = Resultado
+            if isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
+                importe = resultado - gastos_orig - (costo if isinstance(costo, (int, float)) else 0)
+            else:
+                importe = 0
+            
+            origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+            
+            # Tipo de Cambio USD: 1 si contiene dolar/cable, Valor USD del día si Pesos
+            moneda_str = str(moneda).lower() if moneda else ""
+            if "dolar" in moneda_str or "cable" in moneda_str:
+                tipo_cambio = 1
+            elif moneda == "Pesos" or "peso" in moneda_str:
+                # Buscar valor USD del día
+                fecha_conc = concertacion if isinstance(concertacion, datetime) else None
+                tipo_cambio = self._get_cotizacion(fecha_conc, "Dolar MEP") if fecha_conc else 1
+            else:
+                tipo_cambio = 1
+            
+            # Solo agregar si tiene datos válidos
+            if not instrumento and not cod_instrum:
+                continue
+            
+            transactions.append({
+                'instrumento': instrumento,
+                'cod_instrum': cod_instrum,
+                'categoria': categoria,
+                'tipo_instrumento': tipo_instrumento,
+                'concertacion': concertacion,
+                'liquidacion': liquidacion,
+                'nro_ndc': nro_ndc,
+                'tipo_operacion': tipo_operacion,
+                'cantidad': cantidad,
+                'moneda': moneda,
+                'tipo_cambio': tipo_cambio,
+                'gastos': gastos,
+                'importe': importe,
+                'origen': origen,
+            })
+        
+        # Ordenar por cod_instrum y luego por concertación
+        def sort_key(t):
+            cod = t.get('cod_instrum') or 0
+            try:
+                cod_num = int(cod)
+            except:
+                cod_num = 0
+            fecha = t.get('concertacion')
+            if isinstance(fecha, datetime):
+                return (cod_num, fecha)
+            else:
+                return (cod_num, datetime.min)
+        
+        transactions.sort(key=sort_key)
+        
+        # Escribir transacciones
+        for row_out, trans in enumerate(transactions, start=2):
+            ws.cell(row_out, 1, trans['instrumento'])
+            ws.cell(row_out, 2, trans['cod_instrum'])
+            ws.cell(row_out, 3, trans['categoria'])
+            ws.cell(row_out, 4, trans['tipo_instrumento'])
+            ws.cell(row_out, 5, trans['concertacion'])  # datetime
+            ws.cell(row_out, 6, trans['liquidacion'])
+            ws.cell(row_out, 7, trans['nro_ndc'])
+            ws.cell(row_out, 8, trans['tipo_operacion'])
+            ws.cell(row_out, 9, trans['cantidad'])
+            ws.cell(row_out, 10, trans['moneda'])
+            ws.cell(row_out, 11, trans['tipo_cambio'])
+            ws.cell(row_out, 12, trans['gastos'])
+            ws.cell(row_out, 13, trans['importe'])
+            ws.cell(row_out, 14, trans['origen'])
     
     def _create_resumen(self, wb: Workbook):
         """Crea hoja Resumen con totales."""

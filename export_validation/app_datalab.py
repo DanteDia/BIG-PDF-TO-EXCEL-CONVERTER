@@ -267,18 +267,56 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                     progress_bar.progress(100)
                     status_text.text("✅ Procesamiento completado!")
                     
+                    # ======== MERGE AUTOMÁTICO SI HAY AMBOS ARCHIVOS ========
+                    if 'gallo' in results and 'visual' in results:
+                        status_text.text("🔄 Generando Resumen Impositivo combinado...")
+                        
+                        # Create temp files for merge
+                        gallo_temp = os.path.join(temp_dir, "gallo_for_merge.xlsx")
+                        visual_temp = os.path.join(temp_dir, "visual_for_merge.xlsx")
+                        
+                        with open(gallo_temp, "wb") as f:
+                            f.write(results['gallo'])
+                        with open(visual_temp, "wb") as f:
+                            f.write(results['visual'])
+                        
+                        # Get aux_data path
+                        aux_data_dir = Path(__file__).parent.parent / "pdf_converter" / "datalab" / "aux_data"
+                        
+                        # Execute merge
+                        merger = GalloVisualMerger(gallo_temp, visual_temp, str(aux_data_dir))
+                        merged_wb = merger.merge()
+                        
+                        # Save to bytes
+                        output_buffer = io.BytesIO()
+                        merged_wb.save(output_buffer)
+                        output_buffer.seek(0)
+                        results['merged'] = output_buffer.read()
+                        
+                        status_text.text("✅ Resumen Impositivo generado!")
+                    
                     # Store results
                     st.session_state.processed_files = {
                         **results,
                         'timestamp': datetime.now().strftime('%Y%m%d_%H%M')
                     }
                     
-                    st.markdown("""
-                    <div class="success-box">
-                        <h3>✅ Procesamiento Exitoso!</h3>
-                        <p>Los archivos Excel estructurados están listos para descargar.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    # Show success message based on what was processed
+                    if 'merged' in results:
+                        st.markdown("""
+                        <div class="success-box">
+                            <h3>✅ Procesamiento Completo!</h3>
+                            <p>Se generó el <strong>Resumen Impositivo combinado</strong> con datos de Gallo + Visual.</p>
+                            <p>También puede descargar los Excel individuales de cada formato.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                        <div class="success-box">
+                            <h3>✅ Procesamiento Exitoso!</h3>
+                            <p>Los archivos Excel estructurados están listos para descargar.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
                     
             except Exception as e:
                 st.error(f"❌ Error durante el procesamiento: {str(e)}")
@@ -336,14 +374,14 @@ if st.session_state.processed_files is not None:
                 key='download_visual'
             )
     
-    # ==================== MERGE GALLO + VISUAL ====================
-    # Only show merge option if both files are available
-    if 'gallo' in st.session_state.processed_files and 'visual' in st.session_state.processed_files:
+    # ==================== RESUMEN IMPOSITIVO (MERGE) ====================
+    # Show merged file download if available (generated automatically)
+    if 'merged' in st.session_state.processed_files:
         st.markdown("---")
-        st.markdown("### 🔄 Generar Resumen Impositivo Anual")
+        st.markdown("### 📊 Resumen Impositivo Anual")
         st.markdown("""
-        <div class="info-box">
-            <p>Combina los datos de <strong>Gallo</strong> y <strong>Visual</strong> en un único Excel con:</p>
+        <div class="success-box">
+            <p>El <strong>Resumen Impositivo</strong> combina datos de Gallo y Visual con:</p>
             <ul>
                 <li>Boletos unificados y ordenados por especie</li>
                 <li>Resultado Ventas ARS/USD con running stock</li>
@@ -353,61 +391,24 @@ if st.session_state.processed_files is not None:
         </div>
         """, unsafe_allow_html=True)
         
-        if st.button("📊 Generar Resumen Impositivo", type="secondary", use_container_width=True):
-            try:
-                with st.spinner("🔄 Generando resumen impositivo..."):
-                    # Create temp files for merge
-                    temp_dir = tempfile.mkdtemp()
-                    
-                    gallo_temp = os.path.join(temp_dir, "gallo.xlsx")
-                    visual_temp = os.path.join(temp_dir, "visual.xlsx")
-                    
-                    with open(gallo_temp, "wb") as f:
-                        f.write(st.session_state.processed_files['gallo'])
-                    with open(visual_temp, "wb") as f:
-                        f.write(st.session_state.processed_files['visual'])
-                    
-                    # Get aux_data path
-                    aux_data_dir = Path(__file__).parent.parent / "pdf_converter" / "datalab" / "aux_data"
-                    
-                    # Execute merge
-                    merger = GalloVisualMerger(gallo_temp, visual_temp, str(aux_data_dir))
-                    merged_wb = merger.merge()
-                    
-                    # Save to bytes
-                    output_buffer = io.BytesIO()
-                    merged_wb.save(output_buffer)
-                    output_buffer.seek(0)
-                    merged_data = output_buffer.read()
-                    
-                    # Store in session
-                    st.session_state.processed_files['merged'] = merged_data
-                    
-                    st.success("✅ Resumen impositivo generado exitosamente!")
-            except Exception as e:
-                st.error(f"❌ Error al generar resumen: {str(e)}")
-                st.exception(e)
+        comitente_num = st.session_state.processed_files.get('gallo_comitente_num', '')
+        comitente_name = st.session_state.processed_files.get('gallo_comitente_name', '')
         
-        # Download merged file
-        if 'merged' in st.session_state.processed_files:
-            comitente_num = st.session_state.processed_files.get('gallo_comitente_num', '')
-            comitente_name = st.session_state.processed_files.get('gallo_comitente_name', '')
-            
-            if comitente_num and comitente_name:
-                clean_name = re.sub(r'[^\w\s]', '', comitente_name).strip().replace(' ', '_')[:30]
-                merged_filename = f"{comitente_num}_{clean_name}_Resumen_Impositivo_{timestamp}.xlsx"
-            else:
-                merged_filename = f"Resumen_Impositivo_{timestamp}.xlsx"
-            
-            st.download_button(
-                label="📥 Descargar Resumen Impositivo",
-                data=st.session_state.processed_files['merged'],
-                file_name=merged_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                type="primary",
-                key='download_merged'
-            )
+        if comitente_num and comitente_name:
+            clean_name = re.sub(r'[^\w\s]', '', comitente_name).strip().replace(' ', '_')[:30]
+            merged_filename = f"{comitente_num}_{clean_name}_Resumen_Impositivo_{timestamp}.xlsx"
+        else:
+            merged_filename = f"Resumen_Impositivo_{timestamp}.xlsx"
+        
+        st.download_button(
+            label="📥 Descargar Resumen Impositivo (Excel)",
+            data=st.session_state.processed_files['merged'],
+            file_name=merged_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary",
+            key='download_merged'
+        )
     
     # Preview
     st.markdown("### 👁️ Vista Previa")
