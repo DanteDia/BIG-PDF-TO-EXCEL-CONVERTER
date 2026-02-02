@@ -81,8 +81,9 @@ class MarkdownTableParser:
         "BOLETOS": "Boletos",
         "RESULTADO VENTAS": "Resultado Ventas",
         "RENTAS Y DIVIDENDOS": "Rentas Dividendos",
-        "CAUCIONES TOMADORAS": "Cauciones",
-        "CAUCIONES": "Cauciones",
+        "CAUCIONES TOMADORAS": "Cauciones Tomadoras",
+        "CAUCIONES COLOCADORAS": "Cauciones Colocadoras",
+        "CAUCIONES": "Cauciones Tomadoras",  # Default to tomadoras if not specified
         "RESUMEN": "Resumen",
         "POSICIÓN DE TÍTULOS": "Posicion Titulos",
         "POSICION DE TITULOS": "Posicion Titulos",

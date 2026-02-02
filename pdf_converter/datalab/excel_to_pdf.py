@@ -509,30 +509,29 @@ class ExcelToPdfExporter:
             tipo: 'tomadoras' o 'colocadoras'
         """
         elements = []
-        titulo = f"Cauciones {tipo}"
+        titulo = f"Cauciones {tipo.capitalize()}"
         elements.append(Paragraph(titulo, self.styles['SectionTitle']))
         
-        headers, rows = self._read_sheet_data('Cauciones')
+        # Buscar hoja específica según tipo (nuevo formato con hojas separadas)
+        sheet_name = f"Cauciones {tipo.capitalize()}"
+        headers, rows = self._read_sheet_data(sheet_name)
+        
+        # Fallback a hoja única "Cauciones" si no existe la hoja específica
         if not rows:
-            elements.append(Paragraph("Sin operaciones en el período", self.styles['Normal']))
-            elements.append(Spacer(1, 10*mm))
-            return elements
+            headers, rows = self._read_sheet_data('Cauciones')
+            
+            if rows:
+                # Filtrar por tipo de operación (formato antiguo con hoja única)
+                filtered_rows = []
+                for row in rows:
+                    operacion = str(row[3]).upper() if len(row) > 3 and row[3] else ""
+                    if tipo == "tomadoras" and "TOM" in operacion:
+                        filtered_rows.append(row)
+                    elif tipo == "colocadoras" and "COL" in operacion:
+                        filtered_rows.append(row)
+                rows = filtered_rows
         
-        # Filtrar por tipo si hay columna de tipo
-        # Headers: Concertación(0), Plazo(1), Liquidación(2), Operación(3), Boleto(4),
-        # Contado(5), Futuro(6), Tipo de Cambio(7), Tasa (%)(8), Interés Bruto(9),
-        # Interés Devengado(10), Aranceles(11), Derechos(12), Costo Financiero(13), Moneda(14)
-        
-        # Filtrar por tipo de operación
-        filtered_rows = []
-        for row in rows:
-            operacion = str(row[3]).upper() if row[3] else ""
-            if tipo == "tomadoras" and "TOM" in operacion:
-                filtered_rows.append(row)
-            elif tipo == "colocadoras" and "COL" in operacion:
-                filtered_rows.append(row)
-        
-        if not filtered_rows:
+        if not rows:
             elements.append(Paragraph("Sin operaciones en el período", self.styles['Normal']))
             elements.append(Spacer(1, 10*mm))
             return elements
@@ -556,7 +555,7 @@ class ExcelToPdfExporter:
         
         # Agrupar por moneda
         by_moneda = {}
-        for row in filtered_rows:
+        for row in rows:
             moneda = row[14] if len(row) > 14 and row[14] else "Pesos"
             if moneda not in by_moneda:
                 by_moneda[moneda] = []

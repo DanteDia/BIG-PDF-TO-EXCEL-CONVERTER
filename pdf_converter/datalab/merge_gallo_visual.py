@@ -398,14 +398,15 @@ class GalloVisualMerger:
         self._create_posicion_inicial(wb)
         self._create_posicion_final(wb)
         self._create_boletos(wb)
-        self._create_cauciones(wb)  # Nueva hoja para cauciones
+        self._create_cauciones_tomadoras(wb)  # Cauciones Tomadoras
+        self._create_cauciones_colocadoras(wb)  # Cauciones Colocadoras
         self._create_rentas_dividendos_gallo(wb)
         self._create_resultado_ventas_ars(wb)
         self._create_resultado_ventas_usd(wb)
         self._create_rentas_dividendos_ars(wb)
         self._create_rentas_dividendos_usd(wb)
         self._create_resumen(wb)
-        self._create_posicion_titulos(wb)
+        self._create_posicion_titulos(wb)  # Ahora usa Visual
         
         # Agregar hojas auxiliares
         self._add_aux_sheets(wb)
@@ -874,26 +875,34 @@ class GalloVisualMerger:
             ws.cell(row_out, 18, moneda_emision)
             ws.cell(row_out, 19, trans['auditoria'])
     
-    def _create_cauciones(self, wb: Workbook):
+    def _create_cauciones_tomadoras(self, wb: Workbook):
         """
-        Crea hoja Cauciones con operaciones de caución separadas de Boletos.
-        Columnas según estructura Visual con match a Gallo:
-        - Concertación (Gallo: fecha)
-        - Plazo (calculado: diferencia entre vencimiento y fecha)
-        - Liquidación (Gallo: vencimiento)
-        - Operación (Gallo: operacion)
-        - Boleto (Gallo: numero)
-        - Contado (Gallo: colocado)
-        - Futuro (Gallo: al_vencimiento)
-        - Tipo de Cambio (1 si pesos, cotización dólar si dólares)
-        - Tasa (%) (no hay en Gallo)
-        - Interés Bruto (no hay en Gallo)
-        - Interés Devengado (Gallo: interes_pesos o interes_usd)
-        - Aranceles (Gallo: gastos_pesos o gastos_usd)
-        - Derechos (no hay en Gallo)
-        - Costo Financiero (calculado: -(intereses + gastos))
+        Crea hoja Cauciones Tomadoras con operaciones donde el comitente TOMA prestado.
+        Incluye datos de Gallo (operación contiene 'TOM') y Visual (hoja 'Cauciones Tomadoras').
         """
-        ws = wb.create_sheet("Cauciones")
+        self._create_cauciones_by_type(wb, "Cauciones Tomadoras", "TOM")
+    
+    def _create_cauciones_colocadoras(self, wb: Workbook):
+        """
+        Crea hoja Cauciones Colocadoras con operaciones donde el comitente COLOCA fondos.
+        Incluye datos de Gallo (operación contiene 'COL') y Visual (hoja 'Cauciones Colocadoras').
+        """
+        self._create_cauciones_by_type(wb, "Cauciones Colocadoras", "COL")
+    
+    def _create_cauciones_by_type(self, wb: Workbook, sheet_name: str, tipo_filtro: str):
+        """
+        Crea hoja Cauciones con operaciones de caución filtradas por tipo.
+        
+        Args:
+            sheet_name: Nombre de la hoja a crear
+            tipo_filtro: "TOM" para tomadoras, "COL" para colocadoras
+        
+        Columnas según estructura Visual:
+        - Concertación, Plazo, Liquidación, Operación, Boleto
+        - Contado, Futuro, Tipo de Cambio, Tasa (%)
+        - Interés Bruto, Interés Devengado, Aranceles, Derechos, Costo Financiero
+        """
+        ws = wb.create_sheet(sheet_name)
         
         # Headers según estructura Visual
         headers = ['Concertación', 'Plazo', 'Liquidación', 'Operación', 'Boleto',
@@ -909,15 +918,15 @@ class GalloVisualMerger:
         all_cauciones = []
         
         # Procesar hojas de Cauciones de Gallo
-        for sheet_name in self.gallo_wb.sheetnames:
-            if 'caucion' not in sheet_name.lower():
+        for gallo_sheet_name in self.gallo_wb.sheetnames:
+            if 'caucion' not in gallo_sheet_name.lower():
                 continue
             
-            # Determinar moneda del nombre de la hoja
-            if 'pesos' in sheet_name.lower():
+            # Determinar moneda del nombre de la hoja de Gallo
+            if 'pesos' in gallo_sheet_name.lower():
                 moneda = "Pesos"
                 tipo_cambio = 1
-            elif 'dolar' in sheet_name.lower():
+            elif 'dolar' in gallo_sheet_name.lower():
                 moneda = "Dolar MEP"
                 tipo_cambio = 1167.806  # Cotización dólar al 31/12/2024
             else:
@@ -925,7 +934,7 @@ class GalloVisualMerger:
                 tipo_cambio = 1
             
             try:
-                gallo_ws = self.gallo_wb[sheet_name]
+                gallo_ws = self.gallo_wb[gallo_sheet_name]
             except:
                 continue
             
@@ -951,6 +960,11 @@ class GalloVisualMerger:
                     continue
                 
                 if not operacion:
+                    continue
+                
+                # Filtrar por tipo de caución (TOM o COL)
+                operacion_upper = str(operacion).upper()
+                if tipo_filtro not in operacion_upper:
                     continue
                 
                 # Filtrar solo 2025
@@ -984,7 +998,7 @@ class GalloVisualMerger:
                 # Costo financiero = -interes_bruto + aranceles
                 costo_financiero = -interes_bruto + gastos
                 
-                auditoria = f"Origen: Gallo-{sheet_name}"
+                auditoria = f"Origen: Gallo-{gallo_sheet_name}"
                 
                 all_cauciones.append({
                     'fecha': fecha_dt if fecha_dt else fecha,
@@ -1002,7 +1016,65 @@ class GalloVisualMerger:
                     'derechos': None,  # No disponible en Gallo
                     'costo_financiero': costo_financiero,
                     'moneda': moneda,
-                    'origen': f"Gallo-{sheet_name}",
+                    'origen': f"Gallo-{gallo_sheet_name}",
+                    'auditoria': auditoria,
+                })
+        
+        # Agregar cauciones de Visual (si existen hojas correspondientes)
+        visual_sheet_name = sheet_name  # "Cauciones Tomadoras" o "Cauciones Colocadoras"
+        if visual_sheet_name in self.visual_wb.sheetnames:
+            visual_ws = self.visual_wb[visual_sheet_name]
+            
+            for row in range(2, visual_ws.max_row + 1):
+                # Estructura esperada de Visual cauciones:
+                # Concertación, Plazo, Liquidación, Operación, Boleto,
+                # Contado, Futuro, Tipo de Cambio, Tasa (%),
+                # Interés Bruto, Interés Devengado, Aranceles, Derechos, Costo Financiero
+                fecha = visual_ws.cell(row, 1).value
+                plazo = visual_ws.cell(row, 2).value
+                liquidacion = visual_ws.cell(row, 3).value
+                operacion = visual_ws.cell(row, 4).value
+                boleto = visual_ws.cell(row, 5).value
+                contado = visual_ws.cell(row, 6).value
+                futuro = visual_ws.cell(row, 7).value
+                tipo_cambio = visual_ws.cell(row, 8).value
+                tasa = visual_ws.cell(row, 9).value
+                interes_bruto = visual_ws.cell(row, 10).value
+                interes_devengado = visual_ws.cell(row, 11).value
+                aranceles = visual_ws.cell(row, 12).value
+                derechos = visual_ws.cell(row, 13).value
+                costo_financiero = visual_ws.cell(row, 14).value
+                
+                if not operacion:
+                    continue
+                
+                # Determinar moneda (asumimos Pesos por default, o buscar en columna si existe)
+                moneda = "Pesos"
+                if tipo_cambio and float(tipo_cambio) > 1:
+                    moneda = "Dolar MEP"
+                
+                fecha_dt, _ = self._parse_fecha(fecha)
+                liq_dt, _ = self._parse_fecha(liquidacion)
+                
+                auditoria = f"Origen: Visual-{visual_sheet_name}"
+                
+                all_cauciones.append({
+                    'fecha': fecha_dt if fecha_dt else fecha,
+                    'plazo': plazo,
+                    'liquidacion': liq_dt if liq_dt else liquidacion,
+                    'operacion': operacion,
+                    'boleto': boleto,
+                    'contado': contado,
+                    'futuro': futuro,
+                    'tipo_cambio': tipo_cambio or 1,
+                    'tasa': tasa,
+                    'interes_bruto': interes_bruto,
+                    'interes_devengado': interes_devengado,
+                    'aranceles': aranceles,
+                    'derechos': derechos,
+                    'costo_financiero': costo_financiero,
+                    'moneda': moneda,
+                    'origen': f"Visual-{visual_sheet_name}",
                     'auditoria': auditoria,
                 })
         
@@ -1918,46 +1990,89 @@ class GalloVisualMerger:
         ws.cell(3, 12, "=SUM(B3:K3)")
     
     def _create_posicion_titulos(self, wb: Workbook):
-        """Crea hoja Posicion Titulos con resumen simplificado de posiciones finales."""
+        """Crea hoja Posicion Titulos con datos de Visual (fuente principal).
+        
+        La Posición de Títulos se obtiene de la sección POSICIÓN DE TÍTULOS
+        de los PDFs de Visual, NO de Gallo.
+        """
         ws = wb.create_sheet("Posicion Titulos")
         
-        headers = ['Instrumento', 'Código', 'Ticker', 'Cantidad', 'Importe', 'Moneda']
+        # Intentar obtener datos de Visual primero (fuente principal)
+        visual_sheet_name = None
+        for name in ["Posicion Titulos", "Posicion de Titulos", "POSICIÓN DE TÍTULOS"]:
+            if name in self.visual_wb.sheetnames:
+                visual_sheet_name = name
+                break
         
-        for col, header in enumerate(headers, 1):
-            ws.cell(1, col, header)
-            ws.cell(1, col).font = Font(bold=True)
-        
-        # Obtener datos de Posicion Final Gallo
-        try:
-            pos_final = wb['Posicion Final Gallo']
-        except KeyError:
-            return
-        
-        row_out = 2
-        for row in range(2, pos_final.max_row + 1):
-            especie = pos_final.cell(row, 3).value  # especie (col 3)
-            codigo = pos_final.cell(row, 4).value   # Codigo especie (col 4)
-            ticker = pos_final.cell(row, 2).value   # Ticker (col 2)
-            cantidad = pos_final.cell(row, 9).value  # cantidad (col 9)
-            importe = pos_final.cell(row, 17).value  # importe_pesos (col 17)
+        if visual_sheet_name:
+            # Usar datos de Visual (fuente correcta)
+            visual_ws = self.visual_wb[visual_sheet_name]
             
-            if not especie:
-                continue
+            # Copiar encabezados de Visual
+            for col in range(1, visual_ws.max_column + 1):
+                header = visual_ws.cell(1, col).value
+                ws.cell(1, col, header)
+                ws.cell(1, col).font = Font(bold=True)
             
-            # Determinar moneda basado en tipo_especie o nombre
-            tipo_especie = pos_final.cell(row, 1).value or ''
-            moneda = 'Pesos'  # Default
-            if 'dolar' in str(especie).lower() or 'usd' in str(especie).lower():
-                moneda = 'Dolar'
+            # Copiar datos de Visual
+            row_out = 2
+            for row in range(2, visual_ws.max_row + 1):
+                has_data = False
+                for col in range(1, visual_ws.max_column + 1):
+                    value = visual_ws.cell(row, col).value
+                    if value:
+                        has_data = True
+                    ws.cell(row_out, col, value)
+                
+                if has_data:
+                    # Agregar columna de origen
+                    ws.cell(row_out, visual_ws.max_column + 1, f"Visual-{visual_sheet_name}")
+                    row_out += 1
             
-            ws.cell(row_out, 1, especie)
-            ws.cell(row_out, 2, codigo)
-            ws.cell(row_out, 3, ticker)
-            ws.cell(row_out, 4, cantidad)
-            ws.cell(row_out, 5, importe)
-            ws.cell(row_out, 6, moneda)
+            # Agregar header de origen si hay datos
+            if row_out > 2:
+                ws.cell(1, visual_ws.max_column + 1, "Origen")
+                ws.cell(1, visual_ws.max_column + 1).font = Font(bold=True)
+        else:
+            # Fallback: crear estructura básica si no hay Visual
+            headers = ['Instrumento', 'Código', 'Ticker', 'Cantidad', 'Importe', 'Moneda', 'Origen']
             
-            row_out += 1
+            for col, header in enumerate(headers, 1):
+                ws.cell(1, col, header)
+                ws.cell(1, col).font = Font(bold=True)
+            
+            # Si no hay Visual, intentar generar desde Posicion Final Gallo como fallback
+            try:
+                pos_final = wb['Posicion Final Gallo']
+                
+                row_out = 2
+                for row in range(2, pos_final.max_row + 1):
+                    especie = pos_final.cell(row, 3).value  # especie (col 3)
+                    codigo = pos_final.cell(row, 4).value   # Codigo especie (col 4)
+                    ticker = pos_final.cell(row, 2).value   # Ticker (col 2)
+                    cantidad = pos_final.cell(row, 9).value  # cantidad (col 9)
+                    importe = pos_final.cell(row, 17).value  # importe_pesos (col 17)
+                    
+                    if not especie:
+                        continue
+                    
+                    # Determinar moneda basado en tipo_especie o nombre
+                    tipo_especie = pos_final.cell(row, 1).value or ''
+                    moneda = 'Pesos'  # Default
+                    if 'dolar' in str(especie).lower() or 'usd' in str(especie).lower():
+                        moneda = 'Dolar'
+                    
+                    ws.cell(row_out, 1, especie)
+                    ws.cell(row_out, 2, codigo)
+                    ws.cell(row_out, 3, ticker)
+                    ws.cell(row_out, 4, cantidad)
+                    ws.cell(row_out, 5, importe)
+                    ws.cell(row_out, 6, moneda)
+                    ws.cell(row_out, 7, "Fallback-Gallo (Visual no disponible)")
+                    
+                    row_out += 1
+            except KeyError:
+                pass  # No hay datos disponibles
     
     def _add_aux_sheets(self, wb: Workbook):
         """Agrega hojas auxiliares al workbook."""
