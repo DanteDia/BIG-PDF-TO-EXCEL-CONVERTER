@@ -1951,7 +1951,11 @@ class GalloVisualMerger:
             ws.cell(row_out, 14, trans['origen'])
     
     def _create_resumen(self, wb: Workbook):
-        """Crea hoja Resumen con totales."""
+        """Crea hoja Resumen con totales calculados (no fórmulas).
+        
+        Calcula los totales directamente leyendo de las hojas de datos
+        para evitar problemas con fórmulas no evaluadas.
+        """
         ws = wb.create_sheet("Resumen")
         
         headers = ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos',
@@ -1961,33 +1965,96 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
+        # Calcular totales ARS
+        ventas_ars = self._sum_column(wb, 'Resultado Ventas ARS', 21)  # Columna U (Resultado)
+        rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas', 'AMORTIZACION'])
+        dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
+        cauciones_int_ars = self._sum_column(wb, 'Cauciones Tomadoras', 10, moneda_filter='Pesos')  # Interés Bruto
+        cauciones_cf_ars = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos')  # Costo Financiero
+        
+        # Calcular totales USD
+        ventas_usd = self._sum_column(wb, 'Resultado Ventas USD', 24)  # Columna X (Resultado USD)
+        rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas', 'AMORTIZACION'])
+        dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
+        cauciones_int_usd = self._sum_column(wb, 'Cauciones Tomadoras', 10, moneda_filter='Dolar')
+        cauciones_cf_usd = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar')
+        
         # Fila ARS
         ws.cell(2, 1, "ARS")
-        ws.cell(2, 2, "=SUM('Resultado Ventas ARS'!U:U)")  # Ventas
+        ws.cell(2, 2, ventas_ars)
         ws.cell(2, 3, 0)  # FCI
         ws.cell(2, 4, 0)  # Opciones
-        ws.cell(2, 5, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Rentas\",'Rentas Dividendos ARS'!M:M)+SUMIF('Rentas Dividendos ARS'!C:C,\"AMORTIZACION\",'Rentas Dividendos ARS'!M:M)")
-        ws.cell(2, 6, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Dividendos\",'Rentas Dividendos ARS'!M:M)")
+        ws.cell(2, 5, rentas_ars)
+        ws.cell(2, 6, dividendos_ars)
         ws.cell(2, 7, 0)  # Ef. CPD
         ws.cell(2, 8, 0)  # Pagarés
         ws.cell(2, 9, 0)  # Futuros
-        ws.cell(2, 10, 0)  # Cau (int)
-        ws.cell(2, 11, 0)  # Cau (CF)
-        ws.cell(2, 12, "=SUM(B2:K2)")  # Total
+        ws.cell(2, 10, cauciones_int_ars)
+        ws.cell(2, 11, cauciones_cf_ars)
+        total_ars = (ventas_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (cauciones_int_ars or 0) + (cauciones_cf_ars or 0)
+        ws.cell(2, 12, total_ars)
         
         # Fila USD
         ws.cell(3, 1, "USD")
-        ws.cell(3, 2, "=SUM('Resultado Ventas USD'!X:X)")  # Ventas
+        ws.cell(3, 2, ventas_usd)
         ws.cell(3, 3, 0)
         ws.cell(3, 4, 0)
-        ws.cell(3, 5, "=SUMIF('Rentas Dividendos USD'!C:C,\"Rentas\",'Rentas Dividendos USD'!M:M)+SUMIF('Rentas Dividendos USD'!C:C,\"AMORTIZACION\",'Rentas Dividendos USD'!M:M)")
-        ws.cell(3, 6, "=SUMIF('Rentas Dividendos USD'!C:C,\"Dividendos\",'Rentas Dividendos USD'!M:M)")
+        ws.cell(3, 5, rentas_usd)
+        ws.cell(3, 6, dividendos_usd)
         ws.cell(3, 7, 0)
         ws.cell(3, 8, 0)
         ws.cell(3, 9, 0)
-        ws.cell(3, 10, 0)
-        ws.cell(3, 11, 0)
-        ws.cell(3, 12, "=SUM(B3:K3)")
+        ws.cell(3, 10, cauciones_int_usd)
+        ws.cell(3, 11, cauciones_cf_usd)
+        total_usd = (ventas_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (cauciones_int_usd or 0) + (cauciones_cf_usd or 0)
+        ws.cell(3, 12, total_usd)
+    
+    def _sum_column(self, wb: Workbook, sheet_name: str, col: int, moneda_filter: str = None) -> float:
+        """Suma una columna de una hoja, opcionalmente filtrando por moneda."""
+        if sheet_name not in wb.sheetnames:
+            return 0
+        
+        ws = wb[sheet_name]
+        total = 0
+        
+        # Buscar columna de moneda (usualmente la 15 o la última)
+        moneda_col = None
+        if moneda_filter:
+            for c in range(1, ws.max_column + 1):
+                header = ws.cell(1, c).value
+                if header and 'moneda' in str(header).lower():
+                    moneda_col = c
+                    break
+        
+        for row in range(2, ws.max_row + 1):
+            # Filtrar por moneda si se especifica
+            if moneda_filter and moneda_col:
+                moneda_val = str(ws.cell(row, moneda_col).value or '').lower()
+                if moneda_filter.lower() not in moneda_val:
+                    continue
+            
+            val = ws.cell(row, col).value
+            if val and isinstance(val, (int, float)):
+                total += val
+        
+        return total
+    
+    def _sum_by_tipo(self, wb: Workbook, sheet_name: str, tipo_col: int, value_col: int, tipos: list) -> float:
+        """Suma valores de una columna filtrando por tipo."""
+        if sheet_name not in wb.sheetnames:
+            return 0
+        
+        ws = wb[sheet_name]
+        total = 0
+        
+        for row in range(2, ws.max_row + 1):
+            tipo = str(ws.cell(row, tipo_col).value or '').upper()
+            if any(t.upper() in tipo for t in tipos):
+                val = ws.cell(row, value_col).value
+                if val and isinstance(val, (int, float)):
+                    total += val
+        
+        return total
     
     def _create_posicion_titulos(self, wb: Workbook):
         """Crea hoja Posicion Titulos con datos de Visual (fuente principal).

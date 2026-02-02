@@ -591,40 +591,71 @@ class ExcelToPdfExporter:
         return elements
     
     def _build_resumen_section(self) -> List:
-        """Construye la sección de Resumen."""
+        """Construye la sección de Resumen.
+        
+        Calcula los totales directamente de las hojas de datos,
+        ya que las fórmulas de Excel no se evalúan al guardar con openpyxl.
+        """
         elements = []
         elements.append(Paragraph("Resumen", self.styles['SectionTitle']))
         
-        headers, rows = self._read_sheet_data('Resumen')
-        if not rows:
-            elements.append(Paragraph("Sin datos de resumen", self.styles['Normal']))
-            return elements
+        # Calcular totales directamente de las hojas de datos
+        ventas_ars = self._calculate_ventas_total('Resultado Ventas ARS')
+        ventas_usd = self._calculate_ventas_total('Resultado Ventas USD')
         
-        # Headers: Moneda(0), Ventas(1), FCI(2), Opciones(3), Rentas(4), Dividendos(5),
-        # Ef. CPD(6), Pagarés(7), Futuros(8), Cau (int)(9), Cau (CF)(10), Total(11)
+        rentas_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Rentas', 'AMORTIZACION'])
+        dividendos_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Dividendos'])
         
+        rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
+        dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
+        
+        cau_int_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'interes')
+        cau_cf_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo')
+        
+        cau_int_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'interes')
+        cau_cf_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
+        
+        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_int_ars + cau_cf_ars
+        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_int_usd + cau_cf_usd
+        
+        # Headers
         table_headers = ['Moneda', 'Resultados', '', '', '', '', '', '', '', '', '', 'Total']
         sub_headers = ['', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 
                       'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', '']
         
         table_data = [table_headers, sub_headers]
         
-        for row in rows:
-            formatted_row = [
-                row[0] if row[0] else "",  # Moneda
-                self._format_number(row[1]),  # Ventas
-                self._format_number(row[2]),  # FCI
-                self._format_number(row[3]),  # Opciones
-                self._format_number(row[4]),  # Rentas
-                self._format_number(row[5]),  # Dividendos
-                self._format_number(row[6]),  # Ef. CPD
-                self._format_number(row[7]),  # Pagarés
-                self._format_number(row[8]),  # Futuros
-                self._format_number(row[9]),  # Cau (int)
-                self._format_number(row[10]),  # Cau (CF)
-                self._format_number(row[11]),  # Total
-            ]
-            table_data.append(formatted_row)
+        # Fila ARS
+        table_data.append([
+            'ARS',
+            self._format_number(ventas_ars),
+            self._format_number(0),  # FCI
+            self._format_number(0),  # Opciones
+            self._format_number(rentas_ars),
+            self._format_number(dividendos_ars),
+            self._format_number(0),  # Ef. CPD
+            self._format_number(0),  # Pagarés
+            self._format_number(0),  # Futuros
+            self._format_number(cau_int_ars),
+            self._format_number(cau_cf_ars),
+            self._format_number(total_ars),
+        ])
+        
+        # Fila USD
+        table_data.append([
+            'USD',
+            self._format_number(ventas_usd),
+            self._format_number(0),
+            self._format_number(0),
+            self._format_number(rentas_usd),
+            self._format_number(dividendos_usd),
+            self._format_number(0),
+            self._format_number(0),
+            self._format_number(0),
+            self._format_number(cau_int_usd),
+            self._format_number(cau_cf_usd),
+            self._format_number(total_usd),
+        ])
         
         col_widths = [20, 28, 20, 20, 22, 24, 20, 20, 20, 22, 22, 32]
         
@@ -661,6 +692,77 @@ class ExcelToPdfExporter:
         elements.append(Spacer(1, 15*mm))
         
         return elements
+    
+    def _calculate_ventas_total(self, sheet_name: str) -> float:
+        """Calcula el total de ventas de una hoja de Resultado Ventas.
+        
+        Como las fórmulas no se evalúan, calculamos Neto - Costo simplificado.
+        Para ventas (cantidad < 0): usamos el valor Bruto como aproximación.
+        """
+        if sheet_name not in self.wb.sheetnames:
+            return 0
+        
+        ws = self.wb[sheet_name]
+        total = 0
+        
+        # Columnas: I=Cantidad(9), K=Bruto(11), P=Resultado(16)
+        for row in range(2, ws.max_row + 1):
+            cantidad = ws.cell(row, 9).value
+            resultado = ws.cell(row, 16).value  # Columna P: Resultado directo
+            
+            # Si hay resultado directo, usarlo
+            if resultado and isinstance(resultado, (int, float)):
+                total += resultado
+            elif cantidad and isinstance(cantidad, (int, float)) and cantidad < 0:
+                # Para ventas sin resultado directo, usar Bruto como aproximación
+                bruto = ws.cell(row, 11).value
+                if bruto and isinstance(bruto, (int, float)):
+                    # El bruto ya es negativo para ventas, queremos el valor absoluto
+                    total += abs(bruto)
+        
+        return total
+    
+    def _calculate_rentas_dividendos(self, sheet_name: str, tipos: List[str]) -> float:
+        """Calcula el total de rentas o dividendos de una hoja."""
+        if sheet_name not in self.wb.sheetnames:
+            return 0
+        
+        ws = self.wb[sheet_name]
+        total = 0
+        
+        # Columnas: C=Tipo(3), M=Importe Neto(13)
+        for row in range(2, ws.max_row + 1):
+            tipo = str(ws.cell(row, 3).value or '').upper()
+            if any(t.upper() in tipo for t in tipos):
+                importe = ws.cell(row, 13).value
+                if importe and isinstance(importe, (int, float)):
+                    total += importe
+        
+        return total
+    
+    def _calculate_cauciones(self, sheet_name: str, moneda: str, campo: str) -> float:
+        """Calcula el total de cauciones (interés o costo financiero)."""
+        if sheet_name not in self.wb.sheetnames:
+            return 0
+        
+        ws = self.wb[sheet_name]
+        total = 0
+        
+        # Columnas: 10=Interés Bruto, 14=Costo Financiero, 15=Moneda
+        col = 10 if campo == 'interes' else 14
+        
+        for row in range(2, ws.max_row + 1):
+            moneda_val = str(ws.cell(row, 15).value or '').upper()
+            if moneda == 'ARS' and 'PESO' in moneda_val:
+                val = ws.cell(row, col).value
+                if val and isinstance(val, (int, float)):
+                    total += val
+            elif moneda == 'USD' and ('DOLAR' in moneda_val or 'USD' in moneda_val):
+                val = ws.cell(row, col).value
+                if val and isinstance(val, (int, float)):
+                    total += val
+        
+        return total
     
     def _build_posicion_titulos_section(self) -> List:
         """Construye la sección de Posición de Títulos."""
