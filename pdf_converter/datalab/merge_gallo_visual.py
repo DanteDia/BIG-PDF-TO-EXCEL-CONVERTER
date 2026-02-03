@@ -495,24 +495,21 @@ class GalloVisualMerger:
                     bruto = 0
                 ws.cell(row, 13, bruto)
             
-            # Col P (16): Neto = Bruto + Interés - Gastos (ajustado por compra/venta)
+            # Col P (16): Neto = SI(J>0, J*K+O, J*K-O) donde J=cantidad, K=precio, O=gastos
             cell_val = ws.cell(row, 16).value
             if isinstance(cell_val, str) and cell_val.startswith('='):
                 cantidad = ws.cell(row, 10).value  # Col J
-                bruto = ws.cell(row, 13).value     # Col M (ya materializado)
-                interes = ws.cell(row, 14).value   # Col N
+                precio = ws.cell(row, 11).value    # Col K
                 gastos = ws.cell(row, 15).value    # Col O
                 try:
                     cantidad_num = float(cantidad or 0)
-                    bruto_num = float(bruto or 0)
-                    interes_num = float(interes or 0)
+                    precio_num = float(precio or 0)
                     gastos_num = float(gastos or 0)
-                    # Si compra (cantidad > 0): Neto = Bruto + Interés - Gastos
-                    # Si venta (cantidad < 0): Neto = Bruto + Interés + Gastos
+                    # Fórmula Excel: =SI(J2>0,J2*K2+O2,J2*K2-O2)
                     if cantidad_num > 0:
-                        neto = bruto_num + interes_num
+                        neto = cantidad_num * precio_num + gastos_num
                     else:
-                        neto = bruto_num + interes_num - gastos_num
+                        neto = cantidad_num * precio_num - gastos_num
                 except:
                     neto = 0
                 ws.cell(row, 16, neto)
@@ -630,15 +627,53 @@ class GalloVisualMerger:
                 col_stock_fin_price = 23 # W
             else:  # USD
                 precio = self._to_float(ws.cell(row, 10).value)   # Col J = Precio base
-                precio_std = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado
-                bruto_usd = self._to_float(ws.cell(row, 13).value)   # Col M = Bruto USD
+                precio_std = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado (ya es valor)
                 interes = self._to_float(ws.cell(row, 14).value)  # Col N = Interés
-                gastos = self._to_float(ws.cell(row, 17).value)   # Col Q = Gastos
-                valor_usd_dia = self._to_float(ws.cell(row, 16).value)  # Col P = Valor USD Día
+                gastos = self._to_float(ws.cell(row, 17).value)   # Col Q = Gastos (ya es valor)
+                
+                # Materializar P (Valor USD Día) - si es fórmula, calcular VLOOKUP
+                valor_usd_dia_cell = ws.cell(row, 16).value
+                if isinstance(valor_usd_dia_cell, str) and valor_usd_dia_cell.startswith('='):
+                    fecha = ws.cell(row, 5).value  # Col E = Concertación
+                    valor_usd_dia = self._get_cotizacion(fecha, "Dolar MEP")
+                    ws.cell(row, 16, valor_usd_dia)
+                else:
+                    valor_usd_dia = self._to_float(valor_usd_dia_cell)
                 if valor_usd_dia == 0:
                     fecha = ws.cell(row, 5).value
                     valor_usd_dia = self._get_cotizacion(fecha, "Dolar MEP")
                     ws.cell(row, 16, valor_usd_dia)
+                
+                # Materializar O (Tipo Cambio) - 1 para dolar, sino 1/P
+                tipo_cambio_cell = ws.cell(row, 15).value
+                moneda_val = ws.cell(row, 7).value or ""  # Col G = Moneda
+                if isinstance(tipo_cambio_cell, str) and tipo_cambio_cell.startswith('='):
+                    if 'dolar' in str(moneda_val).lower():
+                        tipo_cambio = 1.0
+                    else:
+                        tipo_cambio = 1.0 / valor_usd_dia if valor_usd_dia > 0 else 1.0
+                    ws.cell(row, 15, tipo_cambio)
+                else:
+                    tipo_cambio = self._to_float(tipo_cambio_cell)
+                    if tipo_cambio == 0:
+                        tipo_cambio = 1.0
+                
+                # Materializar L (Precio Std USD) = K * O
+                precio_std_usd_cell = ws.cell(row, 12).value
+                if isinstance(precio_std_usd_cell, str) and precio_std_usd_cell.startswith('='):
+                    precio_std_usd = precio_std * tipo_cambio
+                    ws.cell(row, 12, precio_std_usd)
+                else:
+                    precio_std_usd = self._to_float(precio_std_usd_cell)
+                
+                # Materializar M (Bruto USD) = I * L
+                bruto_usd_cell = ws.cell(row, 13).value
+                if isinstance(bruto_usd_cell, str) and bruto_usd_cell.startswith('='):
+                    bruto_usd = cantidad * precio_std_usd
+                    ws.cell(row, 13, bruto_usd)
+                else:
+                    bruto_usd = self._to_float(bruto_usd_cell)
+                
                 # Columnas de running stock: T(20)-Z(26)
                 col_stock_ini_qty = 20   # T
                 col_stock_ini_price = 21 # U
@@ -653,40 +688,44 @@ class GalloVisualMerger:
             if cod_instrum != prev_cod_instrum:
                 # Buscar en hoja de posición correspondiente
                 stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
+                # Para USD: convertir precio de posición a USD inmediatamente
+                if moneda_tipo == "USD" and valor_usd_dia > 0:
+                    stock_precio = stock_precio / valor_usd_dia
             # else: usar valores de stock_cantidad y stock_precio de la fila anterior
             
             # Guardar stock inicial para esta fila
             cantidad_stock_inicial = stock_cantidad
-            precio_stock_inicial = stock_precio
+            precio_stock_inicial = stock_precio  # Ya está en USD para hojas USD
             
-            # Para USD, convertir precio de stock a USD
-            if moneda_tipo == "USD" and valor_usd_dia > 0:
-                precio_stock_inicial_usd = precio_stock_inicial / valor_usd_dia
-            else:
-                precio_stock_inicial_usd = precio_stock_inicial
+            # Calcular costo, neto, resultado según fórmulas Excel
+            # ARS: T(Neto) = K(Bruto) + L(Interés), S(Costo) = IF(I<0, I*R, 0), U(Resultado) = IF(S<>0, ABS(T)-ABS(S), 0)
+            # USD: W(Neto) = M(BrutoUSD) - Q(Gastos), V(Costo) = IF(I<0, I*U, 0), X(Resultado) = IF(V<>0, ABS(W)-ABS(V), 0)
             
-            # Calcular costo, neto, resultado
             if cantidad < 0:  # VENTA
                 if moneda_tipo == "ARS":
                     costo = cantidad * precio_stock_inicial  # negativo (cantidad < 0)
-                    neto = abs(bruto) + interes
-                    resultado = abs(neto) - abs(costo) if costo != 0 else 0
+                    neto = bruto + interes  # K + L
                 else:  # USD
-                    costo = cantidad * precio_stock_inicial_usd  # negativo
-                    neto = abs(bruto_usd) - gastos
-                    resultado = abs(neto) - abs(costo) if costo != 0 else 0
+                    costo = cantidad * precio_stock_inicial  # negativo, precio ya en USD
+                    neto = bruto_usd - gastos  # M - Q
+                # Resultado = IF(Costo<>0, ABS(Neto)-ABS(Costo), 0)
+                resultado = abs(neto) - abs(costo) if costo != 0 else 0
             else:  # COMPRA
                 costo = 0
                 if moneda_tipo == "ARS":
-                    neto = bruto + interes
+                    neto = bruto + interes  # K + L
                 else:
-                    neto = bruto_usd + interes
-                resultado = 0
+                    neto = bruto_usd + interes  # Para compra: M + N
+                resultado = 0  # No hay resultado en compras
             
             # Actualizar stock para la próxima fila
             if cantidad > 0:  # COMPRA - promedio ponderado
                 valor_anterior = stock_cantidad * stock_precio
-                valor_nuevo = cantidad * precio
+                if moneda_tipo == "USD":
+                    # Para USD: usar precio en USD (L = precio_std_usd)
+                    valor_nuevo = cantidad * precio_std_usd
+                else:
+                    valor_nuevo = cantidad * precio
                 stock_cantidad += cantidad
                 if stock_cantidad > 0:
                     stock_precio = (valor_anterior + valor_nuevo) / stock_cantidad
@@ -699,32 +738,35 @@ class GalloVisualMerger:
             
             # ========== MATERIALIZAR VALORES ==========
             if moneda_tipo == "ARS":
-                # Col O (15): IVA = |Gastos| * 0.1736
-                iva = abs(gastos) * 0.1736 if gastos else 0
-                ws.cell(row, 15, iva if gastos >= 0 else -iva)
+                # Col O (15): IVA = IF(N>0, N*0.1736, N*-0.1736)
+                # Donde N = Gastos. Si gastos>0: IVA=gastos*0.1736, sino IVA=gastos*-0.1736
+                if gastos > 0:
+                    iva = gastos * 0.1736
+                else:
+                    iva = gastos * -0.1736  # gastos negativo * -0.1736 = positivo
+                ws.cell(row, 15, iva)
             else:  # USD
-                # Col R (18): IVA = |Gastos| * 0.1736
-                iva = abs(gastos) * 0.1736 if gastos else 0
-                ws.cell(row, 18, iva if gastos >= 0 else -iva)
+                # Col R (18): IVA = IF(Q>0, Q*0.1736, Q*-0.1736)
+                if gastos > 0:
+                    iva = gastos * 0.1736
+                else:
+                    iva = gastos * -0.1736
+                ws.cell(row, 18, iva)
             
             # Running stock columns
             ws.cell(row, col_stock_ini_qty, cantidad_stock_inicial)
-            
-            if moneda_tipo == "ARS":
-                ws.cell(row, col_stock_ini_price, precio_stock_inicial)
-            else:
-                ws.cell(row, col_stock_ini_price, precio_stock_inicial_usd)
+            ws.cell(row, col_stock_ini_price, precio_stock_inicial)  # Ya en USD para hojas USD
             
             ws.cell(row, col_costo, costo)  # Ya es negativo para ventas
             ws.cell(row, col_neto, neto)
             ws.cell(row, col_resultado, resultado)
             ws.cell(row, col_stock_fin_qty, cantidad_stock_final)
             
-            if moneda_tipo == "ARS":
-                ws.cell(row, col_stock_fin_price, precio_stock_final if cantidad_stock_final != 0 else 0)
+            # Para USD, precio_stock_final ya está en USD
+            if cantidad_stock_final != 0:
+                ws.cell(row, col_stock_fin_price, precio_stock_final)
             else:
-                precio_stock_final_usd = precio_stock_final / valor_usd_dia if valor_usd_dia > 0 and cantidad_stock_final != 0 else 0
-                ws.cell(row, col_stock_fin_price, precio_stock_final_usd)
+                ws.cell(row, col_stock_fin_price, 0)
             
             # Actualizar código previo para siguiente iteración
             prev_cod_instrum = cod_instrum

@@ -1,0 +1,120 @@
+================================================================================
+RESULTADO VENTAS USD - KEY FORMULAS ANALYSIS
+================================================================================
+Row 2:
+  I (Cantidad): -2000
+  J (Precio): 104.437
+  K (Precio Standarizado): 104.437
+  L (Precio Standarizado en USD): =K2*O2
+  M (Bruto en USD): =I2*L2
+  O (Tipo de Cambio): 1
+  P (Valor USD Dia): =IFERROR(VLOOKUP(E2,'Cotizacion Dolar Historica'!A:B,2,FALSE),0)
+  Q (Gastos): 0
+  R (IVA): =IF(Q2>0,Q2*0.1736,Q2*-0.1736)
+  W (Neto Calculado visual): =M2-Q2
+  X (Resultado Calculado final): =IF(V2<>0,ABS(W2)-ABS(V2),0)
+
+Row 3:
+  I (Cantidad): 2000
+  J (Precio): 106.314
+  K (Precio Standarizado): 106.314
+  L (Precio Standarizado en USD): =K3*O3
+  M (Bruto en USD): =I3*L3
+  O (Tipo de Cambio): 1
+  P (Valor USD Dia): =IFERROR(VLOOKUP(E3,'Cotizacion Dolar Historica'!A:B,2,FALSE),0)
+  Q (Gastos): 0
+  R (IVA): =IF(Q3>0,Q3*0.1736,Q3*-0.1736)
+  W (Neto Calculado visual): =M3-Q3
+  X (Resultado Calculado final): =IF(V3<>0,ABS(W3)-ABS(V3),0)
+
+Row 4:
+  I (Cantidad): 13791
+  J (Precio): 63.682
+  K (Precio Standarizado): 63.682
+  L (Precio Standarizado en USD): =K4*O4
+  M (Bruto en USD): =I4*L4
+  O (Tipo de Cambio): 1
+  P (Valor USD Dia): =IFERROR(VLOOKUP(E4,'Cotizacion Dolar Historica'!A:B,2,FALSE),0)
+  Q (Gastos): 0
+  R (IVA): =IF(Q4>0,Q4*0.1736,Q4*-0.1736)
+  W (Neto Calculado visual): =M4-Q4
+  X (Resultado Calculado final): =IF(V4<>0,ABS(W4)-ABS(V4),0)
+
+Row 5:
+  I (Cantidad): -13791
+  J (Precio): 57.171
+  K (Precio Standarizado): 57.171
+  L (Precio Standarizado en USD): =K5*O5
+  M (Bruto en USD): =I5*L5
+  O (Tipo de Cambio): 1
+  P (Valor USD Dia): =IFERROR(VLOOKUP(E5,'Cotizacion Dolar Historica'!A:B,2,FALSE),0)
+  Q (Gastos): 0
+  R (IVA): =IF(Q5>0,Q5*0.1736,Q5*-0.1736)
+  W (Neto Calculado visual): =M5-Q5
+  X (Resultado Calculado final): =IF(V5<>0,ABS(W5)-ABS(V5),0)
+
+Row 6:
+  I (Cantidad): 7737
+  J (Precio): 99.476
+  K (Precio Standarizado): 99.476
+  L (Precio Standarizado en USD): =K6*O6
+  M (Bruto en USD): =I6*L6
+  O (Tipo de Cambio): 1
+  P (Valor USD Dia): =IFERROR(VLOOKUP(E6,'Cotizacion Dolar Historica'!A:B,2,FALSE),0)
+  Q (Gastos): 0
+  R (IVA): =IF(Q6>0,Q6*0.1736,Q6*-0.1736)
+  W (Neto Calculado visual): =M6-Q6
+  X (Resultado Calculado final): =IF(V6<>0,ABS(W6)-ABS(V6),0)
+
+Row 7:
+  I (Cantidad): 12247
+  J (Precio): 63.022
+  K (Precio Standarizado): 63.022
+  L (Precio Standarizado en USD): =K7*O7
+  M (Bruto en USD): =I7*L7
+  O (Tipo de Cambio): 1
+  P (Valor USD Dia): =IFERROR(VLOOKUP(E7,'Cotizacion Dolar Historica'!A:B,2,FALSE),0)
+  Q (Gastos): 0
+  R (IVA): =IF(Q7>0,Q7*0.1736,Q7*-0.1736)
+  W (Neto Calculado visual): =M7-Q7
+  X (Resultado Calculado final): =IF(V7<>0,ABS(W7)-ABS(V7),0)
+
+================================================================================
+BOLETOS - NETO FORMULA CHECK
+================================================================================
+Row 2:
+  J (Cantidad): -2000
+  K (Precio): 104.437
+  O (Gastos): 0
+  P (Neto Calculado): =IF(J2>0,J2*K2+O2,J2*K2-O2)
+
+Row 3:
+  J (Cantidad): 2000
+  K (Precio): 106.314
+  O (Gastos): 0
+  P (Neto Calculado): =IF(J3>0,J3*K3+O3,J3*K3-O3)
+
+Row 4:
+  J (Cantidad): 13791
+  K (Precio): 63.682
+  O (Gastos): 0
+  P (Neto Calculado): =IF(J4>0,J4*K4+O4,J4*K4-O4)
+
+Row 5:
+  J (Cantidad): -13791
+  K (Precio): 57.171
+  O (Gastos): 0
+  P (Neto Calculado): =IF(J5>0,J5*K5+O5,J5*K5-O5)
+
+Row 6:
+  J (Cantidad): 7737
+  K (Precio): 99.476
+  O (Gastos): 0
+  P (Neto Calculado): =IF(J6>0,J6*K6+O6,J6*K6-O6)
+
+Row 7:
+  J (Cantidad): 12247
+  K (Precio): 63.022
+  O (Gastos): 0
+  P (Neto Calculado): =IF(J7>0,J7*K7+O7,J7*K7-O7)
+

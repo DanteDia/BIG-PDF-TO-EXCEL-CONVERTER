@@ -490,31 +490,27 @@ class ExcelToPdfExporter:
         # Columnas a mostrar por moneda usando nombres
         if moneda == 'ARS':
             col_map = [
-                ('Concertación', 'Concertación', 'date'),
-                ('Liquidación', 'Liquidación', 'date'),
-                ('Moneda', 'Moneda', 'text'),
+                ('Instrumento', 'Instrumento', 'text'),
+                ('Cod.Instrum', 'Código', 'integer'),
+                ('Concertación', 'Fecha', 'date'),
                 ('Tipo Operación', 'Tipo Op.', 'text'),
                 ('Cantidad', 'Cantidad', 'number'),
                 ('Precio', 'Precio', 'number'),
                 ('Bruto', 'Bruto', 'number'),
-                ('Interés', 'Interés', 'number'),
-                ('Tipo de Cambio', 'T.C.', 'number'),
                 ('Gastos', 'Gastos', 'number'),
                 ('IVA', 'IVA', 'number'),
-                ('Neto Calculado', 'Resultado', 'number'),
+                ('Resultado Calculado(final)', 'Resultado', 'number'),
             ]
         else:  # USD
             col_map = [
-                ('Concertación', 'Concertación', 'date'),
-                ('Liquidación', 'Liquidación', 'date'),
-                ('Moneda', 'Moneda', 'text'),
+                ('Instrumento', 'Instrumento', 'text'),
+                ('Cod.Instrum', 'Código', 'integer'),
+                ('Concertación', 'Fecha', 'date'),
                 ('Tipo Operación', 'Tipo Op.', 'text'),
                 ('Cantidad', 'Cantidad', 'number'),
-                ('Precio', 'Precio', 'number'),
+                ('Precio Standarizado en USD', 'Precio USD', 'number'),
                 ('Bruto en USD', 'Bruto USD', 'number'),
-                ('Interés', 'Interés', 'number'),
-                ('Tipo de Cambio', 'T.C.', 'number'),
-                ('Gastos en USD', 'Gastos', 'number'),
+                ('Gastos', 'Gastos', 'number'),
                 ('IVA', 'IVA', 'number'),
                 ('Resultado Calculado(final)', 'Resultado', 'number'),
             ]
@@ -564,7 +560,7 @@ class ExcelToPdfExporter:
                         table_row.append(val)
                     table_rows.append(table_row)
                 
-                col_widths = [18, 18, 20, 25, 18, 16, 22, 14, 18, 18, 16, 22]
+                col_widths = [55, 14, 18, 25, 18, 18, 22, 18, 16, 24]
                 
                 table = self._create_table(table_headers, table_rows, col_widths, col_formatters)
                 if table:
