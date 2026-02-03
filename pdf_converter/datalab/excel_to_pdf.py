@@ -27,6 +27,56 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import io
+import sys
+import os
+
+
+def _read_excel_with_com(excel_path: str) -> Dict[str, List[List[Any]]]:
+    """
+    Lee un Excel usando COM automation para obtener valores calculados de fórmulas.
+    Solo funciona en Windows con Excel instalado.
+    
+    Returns:
+        Dict con nombre_hoja -> lista de filas (cada fila es lista de valores)
+    """
+    try:
+        import pythoncom
+        import win32com.client
+        
+        pythoncom.CoInitialize()
+        xl = win32com.client.DispatchEx('Excel.Application')
+        xl.Visible = False
+        xl.DisplayAlerts = False
+        
+        abs_path = os.path.abspath(excel_path)
+        wb = xl.Workbooks.Open(abs_path)
+        
+        result = {}
+        for sheet in wb.Sheets:
+            sheet_name = sheet.Name
+            used_range = sheet.UsedRange
+            if used_range:
+                # Leer todo el rango usado
+                values = used_range.Value
+                if values:
+                    # Convertir a lista de listas
+                    if isinstance(values[0], tuple):
+                        result[sheet_name] = [list(row) for row in values]
+                    else:
+                        # Solo una fila
+                        result[sheet_name] = [list(values)]
+                else:
+                    result[sheet_name] = []
+            else:
+                result[sheet_name] = []
+        
+        wb.Close(False)
+        xl.Quit()
+        
+        return result
+    except Exception as e:
+        # Si falla COM, retornar None para usar openpyxl
+        return None
 
 
 class ExcelToPdfExporter:
@@ -52,6 +102,14 @@ class ExcelToPdfExporter:
         self.excel_path = Path(excel_path)
         self.wb = load_workbook(excel_path, data_only=True)
         
+        # Intentar leer valores calculados usando Excel COM (Windows con Excel)
+        # Esto resuelve el problema de fórmulas no evaluadas
+        self._com_data = None
+        if sys.platform == 'win32':
+            self._com_data = _read_excel_with_com(str(excel_path))
+            if self._com_data:
+                print("[INFO] Usando Excel COM para leer valores calculados")
+        
         # Info del cliente
         self.cliente_info = cliente_info or {
             'numero': 'XXXXX',
@@ -66,6 +124,39 @@ class ExcelToPdfExporter:
         # Estilos
         self.styles = getSampleStyleSheet()
         self._setup_styles()
+    
+    def _get_cell_value(self, sheet_name: str, row: int, col: int) -> Any:
+        """
+        Obtiene el valor de una celda, usando COM si está disponible.
+        row y col son 1-indexed (como en Excel/openpyxl).
+        """
+        if self._com_data and sheet_name in self._com_data:
+            data = self._com_data[sheet_name]
+            if row <= len(data) and col <= len(data[row-1]):
+                return data[row-1][col-1]
+            return None
+        else:
+            # Fallback a openpyxl
+            if sheet_name in self.wb.sheetnames:
+                return self.wb[sheet_name].cell(row, col).value
+            return None
+    
+    def _get_sheet_data(self, sheet_name: str) -> List[List[Any]]:
+        """
+        Obtiene todos los datos de una hoja como lista de listas.
+        """
+        if self._com_data and sheet_name in self._com_data:
+            return self._com_data[sheet_name]
+        else:
+            # Fallback a openpyxl
+            if sheet_name in self.wb.sheetnames:
+                ws = self.wb[sheet_name]
+                data = []
+                for row in range(1, ws.max_row + 1):
+                    row_data = [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
+                    data.append(row_data)
+                return data
+            return []
     
     def _setup_styles(self):
         """Configura estilos personalizados."""
@@ -694,13 +785,33 @@ class ExcelToPdfExporter:
         return elements
     
     def _calculate_ventas_total(self, sheet_name: str) -> float:
-        """Calcula el resultado real de ventas usando running stock.
+        """Calcula el resultado total de ventas.
         
-        Implementa el cálculo de running stock para obtener el precio promedio
-        ponderado de compra y calcular el resultado real de cada venta.
+        Si tenemos datos de Excel COM, lee directamente la columna Resultado (U para ARS, X para USD).
+        Si no, implementa el cálculo de running stock manualmente.
         """
         from collections import defaultdict
         
+        # Si tenemos datos COM, leer directamente el resultado calculado por Excel
+        if self._com_data and sheet_name in self._com_data:
+            data = self._com_data[sheet_name]
+            if len(data) < 2:
+                return 0
+            
+            # Determinar columna de resultado según el tipo
+            # ARS: Col U (21) = Resultado Calculado(final)
+            # USD: Col X (24) = Resultado Calculado(final)
+            resultado_col = 20 if 'ARS' in sheet_name else 23  # 0-indexed
+            
+            total = 0
+            for row in data[1:]:  # Skip header
+                if resultado_col < len(row):
+                    val = row[resultado_col]
+                    if val and isinstance(val, (int, float)):
+                        total += val
+            return total
+        
+        # Fallback: usar openpyxl y calcular manualmente
         if sheet_name not in self.wb.sheetnames:
             return 0
         

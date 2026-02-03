@@ -411,8 +411,9 @@ class GalloVisualMerger:
         # Agregar hojas auxiliares
         self._add_aux_sheets(wb)
         
-        # Materializar fórmulas: convertir todas las fórmulas a valores calculados
-        self._materialize_formulas(wb)
+        # NOTA: No materializamos fórmulas aquí.
+        # Para el PDF, usamos Excel COM para leer los valores calculados.
+        # self._materialize_formulas(wb)
         
         return wb
     
@@ -620,49 +621,56 @@ class GalloVisualMerger:
                     # Col W (23): Precio Stock Final
                     ws.cell(row, 23, precio_stock_final)
                 else:  # USD
-                    # Col R (18): IVA = Gastos * 0.1736
-                    iva = abs(gastos) * 0.1736 if gastos else 0
-                    ws.cell(row, 18, iva)
+                    # Para operaciones en USD, el tipo de cambio es 1 (ya operan en dólares)
+                    # Col O (15): Tipo de Cambio = 1 para USD
+                    ws.cell(row, 15, 1)
                     
-                    # Calcular tipo de cambio desde fecha
+                    # Col P (16): Valor USD Día - cotización del día (para referencia)
                     fecha = ws.cell(row, 5).value  # Col E = Concertación
-                    tc = self._get_cotizacion(fecha, "Dolar MEP")
-                    ws.cell(row, 15, tc)  # Col O = Tipo de Cambio
-                    
-                    # Col P (16): Valor USD Día - calcular desde cotización
                     valor_usd_dia = self._get_cotizacion(fecha, "Dolar MEP")
                     ws.cell(row, 16, valor_usd_dia)
                     
                     # Col K (11): Precio Standarizado - ya debería estar calculado
                     precio_std = self._to_float(ws.cell(row, 11).value)
                     
-                    # Col L (12): Precio Std USD = K * O
-                    precio_std_usd = precio_std * tc
-                    ws.cell(row, 12, precio_std_usd)
+                    # Col L (12): Precio Std USD = K * TC = K * 1 = K (ya está en USD)
+                    ws.cell(row, 12, precio_std)
                     
-                    # Col M (13): Bruto USD = Cantidad * Precio Std USD
-                    bruto_usd = cantidad * precio_std_usd
+                    # Col M (13): Bruto USD = Cantidad * Precio Std
+                    bruto_usd = cantidad * precio_std
                     ws.cell(row, 13, bruto_usd)
                     
-                    # Recalcular bruto y neto con valores correctos
-                    bruto = bruto_usd
+                    # Col R (18): IVA = Gastos * 0.1736
+                    iva = abs(gastos) * 0.1736 if gastos else 0
+                    ws.cell(row, 18, iva)
+                    
+                    # Para USD, el precio stock inicial debe estar en USD
+                    # (dividir precio en pesos por valor USD día)
+                    precio_stock_usd = precio_stock_inicial / valor_usd_dia if valor_usd_dia > 0 else precio_stock_inicial
+                    
+                    # Recalcular costo con precio en USD
+                    if cantidad < 0:  # VENTA
+                        costo_usd = abs(cantidad) * precio_stock_usd
+                    else:
+                        costo_usd = 0
                     
                     # Col T (20): Cantidad Stock Inicial
                     ws.cell(row, 20, cantidad_stock_inicial)
                     # Col U (21): Precio Stock USD
-                    ws.cell(row, 21, precio_stock_inicial)
+                    ws.cell(row, 21, precio_stock_usd)
                     # Col V (22): Costo por venta
-                    ws.cell(row, 22, -costo if cantidad < 0 else 0)
-                    # Col W (23): Neto Calculado = Bruto - Gastos
+                    ws.cell(row, 22, -costo_usd if cantidad < 0 else 0)
+                    # Col W (23): Neto Calculado = Bruto USD - Gastos
                     neto_calculado = abs(bruto_usd) - gastos if cantidad < 0 else bruto_usd + interes
                     ws.cell(row, 23, neto_calculado)
-                    # Col X (24): Resultado Calculado
-                    resultado_usd = neto_calculado - costo if cantidad < 0 else 0
+                    # Col X (24): Resultado Calculado = Neto - Costo
+                    resultado_usd = neto_calculado - costo_usd if cantidad < 0 else 0
                     ws.cell(row, 24, resultado_usd)
                     # Col Y (25): Cantidad Stock Final
                     ws.cell(row, 25, cantidad_stock_final)
-                    # Col Z (26): Precio Stock Final
-                    ws.cell(row, 26, precio_stock_final)
+                    # Col Z (26): Precio Stock Final (en USD)
+                    precio_stock_final_usd = precio_stock_final / valor_usd_dia if valor_usd_dia > 0 else precio_stock_final
+                    ws.cell(row, 26, precio_stock_final_usd)
     
     def _to_float(self, value) -> float:
         """Convierte un valor a float de forma segura."""
