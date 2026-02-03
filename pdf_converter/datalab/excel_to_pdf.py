@@ -11,6 +11,8 @@ Genera un PDF con todas las secciones del reporte financiero:
 - Cauciones Colocadoras
 - Resumen
 - Posición de Títulos
+
+Usa Datalab API para leer valores de fórmulas Excel (cross-platform).
 """
 
 from reportlab.lib import colors
