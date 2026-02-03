@@ -21,7 +21,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm, cm
 from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, 
-    PageBreak, KeepTogether
+    PageBreak, KeepTogether, Image
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from openpyxl import load_workbook
@@ -474,7 +474,12 @@ class ExcelToPdfExporter:
         return elements
     
     def _build_resultado_ventas_section(self, moneda: str) -> List:
-        """Construye la sección de Resultado Ventas (ARS o USD)."""
+        """Construye la sección de Resultado Ventas (ARS o USD).
+        
+        Agrupa por Tipo de Instrumento (ej: Acciones, Obligaciones Negociables, etc.)
+        y muestra una tabla con todas las operaciones del tipo, incluyendo
+        Instrumento y Código en las primeras columnas.
+        """
         elements = []
         sheet_name = f"Resultado Ventas {moneda}"
         
@@ -521,51 +526,45 @@ class ExcelToPdfExporter:
             idx = self._get_col_index(headers, col_name)
             col_indices.append((idx, display_name, fmt))
         
-        # Índices para agrupar
+        # Índice para agrupar por tipo de instrumento
         tipo_idx = self._get_col_index(headers, 'Tipo de Instrumento')
-        instr_idx = self._get_col_index(headers, 'Instrumento')
         
-        # Agrupar por tipo de instrumento e instrumento
+        # Agrupar por tipo de instrumento solamente
         by_tipo = {}
         for row in rows:
             tipo = row[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(row) else "Otros"
             tipo = tipo if tipo else "Otros"
-            instr = row[instr_idx] if instr_idx >= 0 and instr_idx < len(row) else "Sin nombre"
-            instr = instr if instr else "Sin nombre"
             
             if tipo not in by_tipo:
-                by_tipo[tipo] = {}
-            if instr not in by_tipo[tipo]:
-                by_tipo[tipo][instr] = []
-            by_tipo[tipo][instr].append(row)
+                by_tipo[tipo] = []
+            by_tipo[tipo].append(row)
         
         for tipo in sorted(by_tipo.keys()):
+            # Solo mostrar el tipo de instrumento como encabezado (ej: "Acciones")
             elements.append(Paragraph(tipo, self.styles['SubsectionTitle']))
             
-            for instr in sorted(by_tipo[tipo].keys()):
-                instr_rows = by_tipo[tipo][instr]
-                
-                # Nombre del instrumento
-                elements.append(Paragraph(f"  {instr}", self.styles['Normal']))
-                
-                # Preparar tabla
-                table_headers = [c[1] for c in col_indices]
-                table_rows = []
-                col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
-                
-                for row in instr_rows:
-                    table_row = []
-                    for idx, _, _ in col_indices:
-                        val = row[idx] if idx >= 0 and idx < len(row) else None
-                        table_row.append(val)
-                    table_rows.append(table_row)
-                
-                col_widths = [55, 14, 18, 25, 18, 18, 22, 18, 16, 24]
-                
-                table = self._create_table(table_headers, table_rows, col_widths, col_formatters)
-                if table:
-                    elements.append(table)
-                elements.append(Spacer(1, 2*mm))
+            tipo_rows = by_tipo[tipo]
+            
+            # Preparar tabla con todas las filas del tipo
+            # La tabla incluye Instrumento y Código como primeras columnas
+            table_headers = [c[1] for c in col_indices]
+            table_rows = []
+            col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
+            
+            for row in tipo_rows:
+                table_row = []
+                for idx, _, _ in col_indices:
+                    val = row[idx] if idx >= 0 and idx < len(row) else None
+                    table_row.append(val)
+                table_rows.append(table_row)
+            
+            # Anchos de columna ajustados
+            col_widths = [40, 18, 18, 25, 18, 22, 22, 18, 16, 24]
+            
+            table = self._create_table(table_headers, table_rows, col_widths, col_formatters)
+            if table:
+                elements.append(table)
+            elements.append(Spacer(1, 4*mm))
         
         elements.append(Spacer(1, 10*mm))
         return elements
@@ -894,106 +893,31 @@ class ExcelToPdfExporter:
         return elements
     
     def _calculate_ventas_total(self, sheet_name: str) -> float:
-        """Calcula el resultado total de ventas.
+        """Calcula el resultado total de ventas sumando la columna Resultado Calculado(final).
         
-        Si tenemos datos de Excel COM, lee directamente la columna Resultado (U para ARS, X para USD).
-        Si no, implementa el cálculo de running stock manualmente.
+        ARS: Col U (21) = Resultado Calculado(final)
+        USD: Col X (24) = Resultado Calculado(final)
         """
-        from collections import defaultdict
-        
-        # Si tenemos datos COM, leer directamente el resultado calculado por Excel
-        if self._com_data and sheet_name in self._com_data:
-            data = self._com_data[sheet_name]
-            if len(data) < 2:
-                return 0
-            
-            # Determinar columna de resultado según el tipo
-            # ARS: Col U (21) = Resultado Calculado(final)
-            # USD: Col X (24) = Resultado Calculado(final)
-            resultado_col = 20 if 'ARS' in sheet_name else 23  # 0-indexed
-            
-            total = 0
-            for row in data[1:]:  # Skip header
-                if resultado_col < len(row):
-                    val = row[resultado_col]
-                    if val and isinstance(val, (int, float)):
-                        total += val
-            return total
-        
-        # Fallback: usar openpyxl y calcular manualmente
         if sheet_name not in self.wb.sheetnames:
             return 0
         
         ws = self.wb[sheet_name]
         
-        # Agrupar transacciones por código de instrumento
-        transacciones_por_cod = defaultdict(list)
+        # Determinar columna de resultado según el tipo
+        # ARS: Col U (21) = Resultado Calculado(final)
+        # USD: Col X (24) = Resultado Calculado(final)
+        resultado_col = 21 if 'ARS' in sheet_name else 24
         
+        total = 0
         for row in range(2, ws.max_row + 1):
-            cod = ws.cell(row, 4).value  # Cod.Instrum
-            cantidad = ws.cell(row, 9).value or 0
-            precio = ws.cell(row, 10).value or 0
-            bruto = ws.cell(row, 11).value or 0
-            interes = ws.cell(row, 12).value or 0
-            
-            # Asegurar que son números
-            if not isinstance(cantidad, (int, float)):
+            val = ws.cell(row, resultado_col).value
+            if val is not None:
                 try:
-                    cantidad = float(cantidad) if cantidad else 0
-                except:
-                    cantidad = 0
-            if not isinstance(precio, (int, float)):
-                try:
-                    precio = float(precio) if precio else 0
-                except:
-                    precio = 0
-            if not isinstance(bruto, (int, float)):
-                try:
-                    bruto = float(bruto) if bruto else 0
-                except:
-                    bruto = 0
-            if not isinstance(interes, (int, float)):
-                try:
-                    interes = float(interes) if interes else 0
-                except:
-                    interes = 0
-            
-            if cod:
-                transacciones_por_cod[cod].append({
-                    'cantidad': cantidad,
-                    'precio': precio,
-                    'bruto': bruto,
-                    'interes': interes,
-                    'neto': bruto + interes
-                })
+                    total += float(val)
+                except (ValueError, TypeError):
+                    pass
         
-        resultado_total = 0
-        
-        for cod, transacciones in transacciones_por_cod.items():
-            stock_cantidad = 0
-            stock_precio_promedio = 0
-            
-            for t in transacciones:
-                cantidad = t['cantidad']
-                precio = t['precio']
-                neto = t['neto']
-                
-                if cantidad > 0:  # COMPRA
-                    # Actualizar precio promedio ponderado
-                    valor_anterior = stock_cantidad * stock_precio_promedio
-                    valor_nuevo = cantidad * precio
-                    stock_cantidad += cantidad
-                    if stock_cantidad > 0:
-                        stock_precio_promedio = (valor_anterior + valor_nuevo) / stock_cantidad
-                
-                elif cantidad < 0:  # VENTA
-                    # Calcular resultado = Neto - Costo
-                    costo = abs(cantidad) * stock_precio_promedio
-                    resultado = abs(neto) - costo
-                    resultado_total += resultado
-                    stock_cantidad += cantidad  # Resta porque cantidad es negativa
-        
-        return resultado_total
+        return total
     
     def _calculate_rentas_dividendos(self, sheet_name: str, tipos: List[str]) -> float:
         """Calcula el total de rentas o dividendos de una hoja."""
@@ -1142,14 +1066,56 @@ class ExcelToPdfExporter:
         # Generar PDF
         def add_header_footer(canvas, doc):
             canvas.saveState()
-            # Header
-            canvas.setFont('Helvetica', 8)
-            header_text = f"REPORTE DE GANANCIAS / Período {self.periodo_inicio} - {self.periodo_fin}, {self.anio}       {self.cliente_info['numero']} - {self.cliente_info['nombre']}"
-            canvas.drawString(10*mm, landscape(A4)[1] - 12*mm, header_text)
+            page_width = landscape(A4)[0]
+            page_height = landscape(A4)[1]
             
-            # Page number
-            page_num = f"Página {doc.page}"
-            canvas.drawRightString(landscape(A4)[0] - 10*mm, landscape(A4)[1] - 12*mm, page_num)
+            # Fondo del header
+            canvas.setFillColor(colors.Color(0.1, 0.2, 0.4))  # Azul oscuro
+            canvas.rect(0, page_height - 18*mm, page_width, 18*mm, fill=True, stroke=False)
+            
+            # Logo (si existe)
+            logo_path = Path(__file__).parent.parent / 'assets' / 'logo.png'
+            if logo_path.exists():
+                try:
+                    canvas.drawImage(
+                        str(logo_path), 
+                        8*mm, 
+                        page_height - 15*mm, 
+                        width=12*mm, 
+                        height=12*mm,
+                        preserveAspectRatio=True,
+                        mask='auto'
+                    )
+                    text_x = 22*mm
+                except:
+                    text_x = 10*mm
+            else:
+                text_x = 10*mm
+            
+            # Título del reporte
+            canvas.setFillColor(colors.white)
+            canvas.setFont('Helvetica-Bold', 10)
+            canvas.drawString(text_x, page_height - 8*mm, "REPORTE DE GANANCIAS")
+            
+            # Info del período y cliente
+            canvas.setFont('Helvetica', 8)
+            info_text = f"Período: {self.periodo_inicio} - {self.periodo_fin}, {self.anio}   |   {self.cliente_info['numero']} - {self.cliente_info['nombre']}"
+            canvas.drawString(text_x, page_height - 14*mm, info_text)
+            
+            # Page number (derecha)
+            canvas.setFont('Helvetica-Bold', 9)
+            page_num = f"Pág. {doc.page}"
+            canvas.drawRightString(page_width - 10*mm, page_height - 11*mm, page_num)
+            
+            # Línea decorativa debajo del header
+            canvas.setStrokeColor(colors.Color(0.9, 0.7, 0.1))  # Dorado/amarillo
+            canvas.setLineWidth(2)
+            canvas.line(0, page_height - 18*mm, page_width, page_height - 18*mm)
+            
+            # Footer
+            canvas.setFillColor(colors.Color(0.5, 0.5, 0.5))
+            canvas.setFont('Helvetica', 6)
+            canvas.drawCentredString(page_width/2, 8*mm, f"Generado automáticamente - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
             
             canvas.restoreState()
         
