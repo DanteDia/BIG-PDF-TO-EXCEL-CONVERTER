@@ -62,7 +62,8 @@ class ExcelToPdfExporter:
         self.excel_path = Path(excel_path)
         self.wb = load_workbook(excel_path, data_only=True)
         
-        # Datalab es el único método para leer valores de fórmulas (cross-platform)
+        # Inicializar atributos (COM ya no se usa, pero mantener para compatibilidad)
+        self._com_data = None
         self._datalab_reader = None
         
         # 1. Usar markdown pre-convertido si está disponible (más eficiente)

@@ -293,34 +293,27 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         # Get aux_data path
                         aux_data_dir = Path(__file__).parent.parent / "pdf_converter" / "datalab" / "aux_data"
                         
-                        # Execute merge
+                        # Execute merge - returns (wb_formulas, wb_values)
                         merger = GalloVisualMerger(gallo_temp, visual_temp, str(aux_data_dir))
-                        merged_wb = merger.merge()
+                        wb_formulas, wb_values = merger.merge(output_mode="both")
                         
-                        # Save merged Excel to temp file
+                        # Save both versions
                         merged_excel_path = os.path.join(temp_dir, "merged_resumen.xlsx")
-                        merged_wb.save(merged_excel_path)
+                        merged_values_path = os.path.join(temp_dir, "merged_resumen_values.xlsx")
                         
-                        # Read bytes for download
+                        wb_formulas.save(merged_excel_path)
+                        wb_values.save(merged_values_path)
+                        
+                        # Read bytes for download (version with formulas for user)
                         with open(merged_excel_path, "rb") as f:
                             results['merged'] = f.read()
                         
-                        # ======== CONVERTIR EXCEL A MARKDOWN PARA PDF ========
-                        status_text.text("🔄 Preparando datos para PDF (esto puede tardar unos minutos)...")
+                        # Read bytes of values version for PDF export
+                        with open(merged_values_path, "rb") as f:
+                            results['merged_values'] = f.read()
                         
-                        api_key = os.environ.get("DATALAB_API_KEY", "").strip()
-                        if api_key:
-                            try:
-                                reader = DatalabExcelReader(api_key)
-                                merged_markdown = reader.convert_to_markdown(merged_excel_path)
-                                if merged_markdown:
-                                    results['merged_markdown'] = merged_markdown
-                                    status_text.text("✅ Datos para PDF preparados!")
-                                else:
-                                    status_text.text("⚠️ No se pudo preparar markdown para PDF")
-                            except Exception as e:
-                                print(f"[WARNING] Error convirtiendo Excel a markdown: {e}")
-                                status_text.text("⚠️ PDF puede tener datos incompletos")
+                        # Store values workbook in session for PDF generation
+                        st.session_state.merged_values_wb = wb_values
                         
                         status_text.text("✅ Resumen Impositivo generado!")
                     
@@ -454,28 +447,32 @@ if st.session_state.processed_files is not None:
         
         # Generar PDF automáticamente si no existe, o con botón si el usuario quiere regenerar
         def generate_pdf_report():
-            """Genera el PDF del reporte usando el markdown del Excel merge."""
-            # Guardar Excel temporalmente
+            """Genera el PDF del reporte usando el Excel con valores calculados."""
             import tempfile
+            
+            # Usar el Excel con valores calculados (tiene todas las fórmulas resueltas)
+            merged_values_bytes = st.session_state.processed_files.get('merged_values')
+            
+            if not merged_values_bytes:
+                # Fallback al Excel con fórmulas si no hay versión con valores
+                merged_values_bytes = st.session_state.processed_files.get('merged')
+                if not merged_values_bytes:
+                    raise RuntimeError("No hay Excel disponible. Reprocese los PDFs.")
+            
+            # Guardar Excel temporalmente
             with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
-                tmp.write(st.session_state.processed_files['merged'])
+                tmp.write(merged_values_bytes)
                 tmp_excel_path = tmp.name
             
-            # Usar el markdown del Excel merge (tiene los valores de fórmulas calculados)
-            merged_markdown = st.session_state.processed_files.get('merged_markdown', '')
-            
-            if not merged_markdown:
-                raise RuntimeError("No hay markdown del Excel disponible. Reprocese los PDFs.")
-            
-            # Crear exportador con markdown del Excel
+            # Crear exportador SIN datalab (el Excel ya tiene valores calculados)
             cliente_info = {
                 'numero': comitente_num or 'XXXXX',
                 'nombre': comitente_name or 'CLIENTE'
             }
             exporter = ExcelToPdfExporter(
                 tmp_excel_path, 
-                cliente_info, 
-                datalab_markdown=merged_markdown
+                cliente_info
+                # Sin datalab_markdown - usará openpyxl directamente
             )
             exporter.periodo_inicio = pdf_periodo_inicio
             exporter.periodo_fin = pdf_periodo_fin

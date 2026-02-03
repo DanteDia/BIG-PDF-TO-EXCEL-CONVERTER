@@ -56,14 +56,18 @@ for i, (k, v) in enumerate(list(m._precios_iniciales_cache.items())[:5]):
 
 # Ejecutar merge
 print("\n\nEjecutando merge...")
-wb = m.merge()
+wb_formulas, wb_values = m.merge(output_mode="both")
 
-print(f"\nHojas generadas ({len(wb.sheetnames)}):")
-for name in wb.sheetnames:
-    ws = wb[name]
+print(f"\nHojas generadas ({len(wb_formulas.sheetnames)}):")
+for name in wb_formulas.sheetnames:
+    ws = wb_formulas[name]
     print(f"  - {name}: {ws.max_row} rows x {ws.max_column} cols")
 
-# Guardar
+# Guardar ambas versiones
 output = "TEST_Merge_v8.xlsx"
-wb.save(output)
-print(f"\n✓ Guardado: {output}")
+wb_formulas.save(output)
+print(f"\nOK Guardado (formulas): {output}")
+
+output_values = "TEST_Merge_v8_values.xlsx"
+wb_values.save(output_values)
+print(f"OK Guardado (values): {output_values}")

@@ -386,9 +386,17 @@ class GalloVisualMerger:
         
         return ''
     
-    def merge(self) -> Workbook:
+    def merge(self, output_mode: str = "both") -> Tuple[Workbook, Workbook]:
         """
-        Ejecuta el merge completo y retorna el workbook consolidado.
+        Ejecuta el merge completo y retorna el/los workbook(s) consolidado(s).
+        
+        Args:
+            output_mode: "formulas" (solo fórmulas), "values" (solo valores), 
+                        o "both" (ambas versiones, default)
+        
+        Returns:
+            Tuple (wb_formulas, wb_values). Si output_mode != "both", 
+            una de las dos será None.
         """
         wb = Workbook()
         # Eliminar hoja default
@@ -411,11 +419,20 @@ class GalloVisualMerger:
         # Agregar hojas auxiliares
         self._add_aux_sheets(wb)
         
-        # NOTA: No materializamos fórmulas aquí.
-        # Para el PDF, usamos Excel COM para leer los valores calculados.
-        # self._materialize_formulas(wb)
+        if output_mode == "formulas":
+            return (wb, None)
         
-        return wb
+        # Crear copia para materializar valores
+        wb_values = self._deep_copy_workbook(wb)
+        
+        # Materializar todas las fórmulas en la copia
+        self._materialize_formulas(wb_values)
+        
+        if output_mode == "values":
+            return (None, wb_values)
+        
+        # Modo "both": retornar ambas versiones
+        return (wb, wb_values)
     
     def _materialize_formulas(self, wb: Workbook):
         """
@@ -426,11 +443,15 @@ class GalloVisualMerger:
         if 'Boletos' in wb.sheetnames:
             self._materialize_boletos(wb['Boletos'])
         
-        # 2. Materializar fórmulas en Resultado Ventas ARS
+        # 2. Materializar fórmulas en Rentas y Dividendos Gallo
+        if 'Rentas y Dividendos Gallo' in wb.sheetnames:
+            self._materialize_rentas_dividendos_gallo(wb['Rentas y Dividendos Gallo'])
+        
+        # 3. Materializar fórmulas en Resultado Ventas ARS
         if 'Resultado Ventas ARS' in wb.sheetnames:
             self._materialize_resultado_ventas(wb['Resultado Ventas ARS'], "ARS")
         
-        # 3. Materializar fórmulas en Resultado Ventas USD
+        # 4. Materializar fórmulas en Resultado Ventas USD
         if 'Resultado Ventas USD' in wb.sheetnames:
             self._materialize_resultado_ventas(wb['Resultado Ventas USD'], "USD")
     
@@ -501,176 +522,212 @@ class GalloVisualMerger:
             if isinstance(cell_val, str) and cell_val.startswith('='):
                 ws.cell(row, 18, especie_data.get('moneda_emision', ''))
     
+    def _materialize_rentas_dividendos_gallo(self, ws):
+        """
+        Materializa fórmulas en la hoja Rentas y Dividendos Gallo.
+        
+        Columnas con fórmulas:
+        - A (1): Tipo de Instrumento = VLOOKUP a EspeciesVisual
+        - I (9): InstrumentoConMoneda = VLOOKUP a EspeciesVisual
+        - L (12): Tipo Cambio = 1 si Pesos, else cotización
+        - Q (17): Neto Calculado = Para amortización: M*(-1), para otros: J-O+P
+        - S (19): Moneda Emisión = VLOOKUP a EspeciesVisual
+        """
+        for row in range(2, ws.max_row + 1):
+            # Col G (7) = Cod.Instrum
+            cod_instrum = ws.cell(row, 7).value
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
+            especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
+            
+            # Col A (1): Tipo de Instrumento
+            cell_val = ws.cell(row, 1).value
+            if isinstance(cell_val, str) and cell_val.startswith('='):
+                ws.cell(row, 1, especie_data.get('tipo_especie', ''))
+            
+            # Col I (9): InstrumentoConMoneda
+            cell_val = ws.cell(row, 9).value
+            if isinstance(cell_val, str) and cell_val.startswith('='):
+                ws.cell(row, 9, especie_data.get('nombre_con_moneda', ''))
+            
+            # Col L (12): Tipo Cambio
+            cell_val = ws.cell(row, 12).value
+            if isinstance(cell_val, str) and cell_val.startswith('='):
+                moneda = ws.cell(row, 5).value  # Col E = Moneda
+                fecha = ws.cell(row, 2).value   # Col B = Fecha
+                if moneda == "Pesos":
+                    tc = 1.0
+                else:
+                    tc = self._get_cotizacion(fecha, str(moneda) if moneda else "Dolar MEP")
+                ws.cell(row, 12, tc)
+            
+            # Col Q (17): Neto Calculado
+            cell_val = ws.cell(row, 17).value
+            if isinstance(cell_val, str) and cell_val.startswith('='):
+                tipo_op = ws.cell(row, 4).value  # Col D = Tipo Operación
+                bruto = self._to_float(ws.cell(row, 10).value)   # Col J = Bruto
+                gastos = self._to_float(ws.cell(row, 13).value)  # Col M = Gastos/Amortización
+                interes = self._to_float(ws.cell(row, 14).value) # Col N = Interés
+                iva = self._to_float(ws.cell(row, 15).value)     # Col O = IVA
+                iibb = self._to_float(ws.cell(row, 16).value)    # Col P = IIBB
+                
+                tipo_op_lower = str(tipo_op).lower() if tipo_op else ""
+                if 'amortizacion' in tipo_op_lower or 'amortización' in tipo_op_lower:
+                    # Para amortización: Neto = Monto (col M) * -1
+                    neto = gastos * -1  # gastos contiene el monto de amortización
+                else:
+                    # Para rentas/dividendos: Neto = Bruto - Gastos + Interés - IVA - IIBB
+                    neto = bruto - abs(gastos) + interes - iva - iibb
+                ws.cell(row, 17, neto)
+            
+            # Col S (19): Moneda Emisión
+            cell_val = ws.cell(row, 19).value
+            if isinstance(cell_val, str) and cell_val.startswith('='):
+                ws.cell(row, 19, especie_data.get('moneda_emision', ''))
+    
     def _materialize_resultado_ventas(self, ws, moneda_tipo: str):
         """
         Materializa fórmulas en hojas de Resultado Ventas.
         
-        Usa algoritmo de running stock para calcular:
-        - Cantidad Stock (Q/V)
-        - Precio Stock Promedio (R/W)
-        - Costo (S)
-        - Neto (T)
-        - Resultado (U)
+        Algoritmo: Itera secuencialmente fila por fila, comparando D{row} vs D{row-1}
+        para detectar cambio de instrumento. Esto replica exactamente el comportamiento
+        de las fórmulas Excel.
+        
+        ARS: Columnas Q-W (17-23) para running stock
+        USD: Columnas T-Z (20-26) para running stock
         """
-        # Primero, agrupar por código de instrumento para running stock
-        # Estructura: {cod_instrum: [(row, cantidad, precio, bruto, interes, origen), ...]}
-        by_instrument = {}
+        wb = ws.parent
+        
+        # Variables de running stock (persisten entre filas del mismo instrumento)
+        stock_cantidad = 0.0
+        stock_precio = 0.0
+        prev_cod_instrum = None
         
         for row in range(2, ws.max_row + 1):
-            cod_instrum = ws.cell(row, 4).value  # Col D
-            if not cod_instrum:
+            # Leer valores de la fila actual
+            cod_instrum_raw = ws.cell(row, 4).value  # Col D = Cod.Instrum
+            if not cod_instrum_raw:
                 continue
-            cod_key = self._clean_codigo(str(cod_instrum))
+            cod_instrum = self._clean_codigo(str(cod_instrum_raw))
             
-            if cod_key not in by_instrument:
-                by_instrument[cod_key] = []
+            origen = ws.cell(row, 1).value or ""  # Col A = Origen
+            is_gallo = origen.upper().startswith("GALLO")
             
-            cantidad = ws.cell(row, 9).value   # Col I
-            precio = ws.cell(row, 10).value    # Col J (ARS) or precio standarizado (USD)
-            bruto = ws.cell(row, 11).value if moneda_tipo == "ARS" else ws.cell(row, 13).value  # Col K (ARS) or Col M (USD)
-            interes = ws.cell(row, 12).value if moneda_tipo == "ARS" else ws.cell(row, 14).value  # Col L (ARS) or Col N (USD)
-            origen = ws.cell(row, 1).value     # Col A
-            gastos = ws.cell(row, 14).value if moneda_tipo == "ARS" else ws.cell(row, 17).value  # Col N (ARS) or Col Q (USD)
+            cantidad = self._to_float(ws.cell(row, 9).value)  # Col I = Cantidad
             
-            by_instrument[cod_key].append({
-                'row': row,
-                'cantidad': self._to_float(cantidad),
-                'precio': self._to_float(precio),
-                'bruto': self._to_float(bruto),
-                'interes': self._to_float(interes),
-                'gastos': self._to_float(gastos),
-                'origen': origen
-            })
-        
-        # Para cada instrumento, calcular running stock
-        for cod_key, transactions in by_instrument.items():
-            stock_cantidad = 0
-            stock_precio_promedio = 0
-            
-            # Buscar posición inicial
-            for trans in transactions:
-                origen = trans['origen'] or ""
-                is_gallo = 'gallo' in origen.lower()
-                pos_sheet = 'Posicion Inicial Gallo' if is_gallo else 'Posicion Final Gallo'
-                
-                if pos_sheet in ws.parent.sheetnames:
-                    pos_ws = ws.parent[pos_sheet]
-                    for r in range(2, pos_ws.max_row + 1):
-                        pos_cod = pos_ws.cell(r, 4).value  # Col D = Codigo especie
-                        if pos_cod and self._clean_codigo(str(pos_cod)) == cod_key:
-                            stock_cantidad = self._to_float(pos_ws.cell(r, 9).value)  # Col I = cantidad
-                            stock_precio_promedio = self._to_float(pos_ws.cell(r, 16).value)  # Col P = precio
-                            break
-                break  # Solo necesitamos la primera transacción para determinar posición inicial
-            
-            # Procesar cada transacción
-            for trans in transactions:
-                row = trans['row']
-                cantidad = trans['cantidad']
-                precio = trans['precio']
-                bruto = trans['bruto']
-                interes = trans['interes']
-                gastos = trans['gastos']
-                
-                # Guardar stock inicial para esta fila
-                cantidad_stock_inicial = stock_cantidad
-                precio_stock_inicial = stock_precio_promedio
-                
-                # Calcular costo, neto, resultado
-                if cantidad < 0:  # VENTA
-                    costo = abs(cantidad) * stock_precio_promedio
-                    neto = abs(bruto) + interes
-                    resultado = neto - costo
-                else:  # COMPRA
-                    costo = 0
-                    neto = 0
-                    resultado = 0
-                
-                # Actualizar stock
-                if cantidad > 0:  # COMPRA
-                    # Promedio ponderado
-                    valor_anterior = stock_cantidad * stock_precio_promedio
-                    valor_nuevo = cantidad * precio
-                    stock_cantidad += cantidad
-                    if stock_cantidad > 0:
-                        stock_precio_promedio = (valor_anterior + valor_nuevo) / stock_cantidad
-                elif cantidad < 0:  # VENTA
-                    stock_cantidad += cantidad  # cantidad es negativo
-                
-                cantidad_stock_final = stock_cantidad
-                precio_stock_final = stock_precio_promedio
-                
-                # Materializar valores en las celdas correspondientes
-                if moneda_tipo == "ARS":
-                    # Col O (15): IVA = Gastos * 0.1736
-                    iva = abs(gastos) * 0.1736 if gastos else 0
-                    ws.cell(row, 15, iva)
-                    
-                    # Col Q (17): Cantidad Stock Inicial
-                    ws.cell(row, 17, cantidad_stock_inicial)
-                    # Col R (18): Precio Stock Inicial
-                    ws.cell(row, 18, precio_stock_inicial)
-                    # Col S (19): Costo por venta
-                    ws.cell(row, 19, -costo if cantidad < 0 else 0)
-                    # Col T (20): Neto Calculado
-                    ws.cell(row, 20, neto if cantidad < 0 else (bruto + interes))
-                    # Col U (21): Resultado Calculado
-                    ws.cell(row, 21, resultado)
-                    # Col V (22): Cantidad Stock Final
-                    ws.cell(row, 22, cantidad_stock_final)
-                    # Col W (23): Precio Stock Final
-                    ws.cell(row, 23, precio_stock_final)
-                else:  # USD
-                    # Para operaciones en USD, el tipo de cambio es 1 (ya operan en dólares)
-                    # Col O (15): Tipo de Cambio = 1 para USD
-                    ws.cell(row, 15, 1)
-                    
-                    # Col P (16): Valor USD Día - cotización del día (para referencia)
-                    fecha = ws.cell(row, 5).value  # Col E = Concertación
+            # Columnas varían entre ARS y USD
+            if moneda_tipo == "ARS":
+                precio = self._to_float(ws.cell(row, 10).value)   # Col J = Precio
+                bruto = self._to_float(ws.cell(row, 11).value)    # Col K = Bruto
+                interes = self._to_float(ws.cell(row, 12).value)  # Col L = Interés
+                gastos = self._to_float(ws.cell(row, 14).value)   # Col N = Gastos
+                # Columnas de running stock: Q(17)-W(23)
+                col_stock_ini_qty = 17   # Q
+                col_stock_ini_price = 18 # R
+                col_costo = 19           # S
+                col_neto = 20            # T
+                col_resultado = 21       # U
+                col_stock_fin_qty = 22   # V
+                col_stock_fin_price = 23 # W
+            else:  # USD
+                precio = self._to_float(ws.cell(row, 10).value)   # Col J = Precio base
+                precio_std = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado
+                bruto_usd = self._to_float(ws.cell(row, 13).value)   # Col M = Bruto USD
+                interes = self._to_float(ws.cell(row, 14).value)  # Col N = Interés
+                gastos = self._to_float(ws.cell(row, 17).value)   # Col Q = Gastos
+                valor_usd_dia = self._to_float(ws.cell(row, 16).value)  # Col P = Valor USD Día
+                if valor_usd_dia == 0:
+                    fecha = ws.cell(row, 5).value
                     valor_usd_dia = self._get_cotizacion(fecha, "Dolar MEP")
                     ws.cell(row, 16, valor_usd_dia)
-                    
-                    # Col K (11): Precio Standarizado - ya debería estar calculado
-                    precio_std = self._to_float(ws.cell(row, 11).value)
-                    
-                    # Col L (12): Precio Std USD = K * TC = K * 1 = K (ya está en USD)
-                    ws.cell(row, 12, precio_std)
-                    
-                    # Col M (13): Bruto USD = Cantidad * Precio Std
-                    bruto_usd = cantidad * precio_std
-                    ws.cell(row, 13, bruto_usd)
-                    
-                    # Col R (18): IVA = Gastos * 0.1736
-                    iva = abs(gastos) * 0.1736 if gastos else 0
-                    ws.cell(row, 18, iva)
-                    
-                    # Para USD, el precio stock inicial debe estar en USD
-                    # (dividir precio en pesos por valor USD día)
-                    precio_stock_usd = precio_stock_inicial / valor_usd_dia if valor_usd_dia > 0 else precio_stock_inicial
-                    
-                    # Recalcular costo con precio en USD
-                    if cantidad < 0:  # VENTA
-                        costo_usd = abs(cantidad) * precio_stock_usd
-                    else:
-                        costo_usd = 0
-                    
-                    # Col T (20): Cantidad Stock Inicial
-                    ws.cell(row, 20, cantidad_stock_inicial)
-                    # Col U (21): Precio Stock USD
-                    ws.cell(row, 21, precio_stock_usd)
-                    # Col V (22): Costo por venta
-                    ws.cell(row, 22, -costo_usd if cantidad < 0 else 0)
-                    # Col W (23): Neto Calculado = Bruto USD - Gastos
-                    neto_calculado = abs(bruto_usd) - gastos if cantidad < 0 else bruto_usd + interes
-                    ws.cell(row, 23, neto_calculado)
-                    # Col X (24): Resultado Calculado = Neto - Costo
-                    resultado_usd = neto_calculado - costo_usd if cantidad < 0 else 0
-                    ws.cell(row, 24, resultado_usd)
-                    # Col Y (25): Cantidad Stock Final
-                    ws.cell(row, 25, cantidad_stock_final)
-                    # Col Z (26): Precio Stock Final (en USD)
-                    precio_stock_final_usd = precio_stock_final / valor_usd_dia if valor_usd_dia > 0 else precio_stock_final
-                    ws.cell(row, 26, precio_stock_final_usd)
+                # Columnas de running stock: T(20)-Z(26)
+                col_stock_ini_qty = 20   # T
+                col_stock_ini_price = 21 # U
+                col_costo = 22           # V
+                col_neto = 23            # W
+                col_resultado = 24       # X
+                col_stock_fin_qty = 25   # Y
+                col_stock_fin_price = 26 # Z
+            
+            # ========== LÓGICA DE RUNNING STOCK ==========
+            # Si es nuevo instrumento (D{row} != D{row-1}), buscar posición inicial
+            if cod_instrum != prev_cod_instrum:
+                # Buscar en hoja de posición correspondiente
+                stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
+            # else: usar valores de stock_cantidad y stock_precio de la fila anterior
+            
+            # Guardar stock inicial para esta fila
+            cantidad_stock_inicial = stock_cantidad
+            precio_stock_inicial = stock_precio
+            
+            # Para USD, convertir precio de stock a USD
+            if moneda_tipo == "USD" and valor_usd_dia > 0:
+                precio_stock_inicial_usd = precio_stock_inicial / valor_usd_dia
+            else:
+                precio_stock_inicial_usd = precio_stock_inicial
+            
+            # Calcular costo, neto, resultado
+            if cantidad < 0:  # VENTA
+                if moneda_tipo == "ARS":
+                    costo = cantidad * precio_stock_inicial  # negativo (cantidad < 0)
+                    neto = abs(bruto) + interes
+                    resultado = abs(neto) - abs(costo) if costo != 0 else 0
+                else:  # USD
+                    costo = cantidad * precio_stock_inicial_usd  # negativo
+                    neto = abs(bruto_usd) - gastos
+                    resultado = abs(neto) - abs(costo) if costo != 0 else 0
+            else:  # COMPRA
+                costo = 0
+                if moneda_tipo == "ARS":
+                    neto = bruto + interes
+                else:
+                    neto = bruto_usd + interes
+                resultado = 0
+            
+            # Actualizar stock para la próxima fila
+            if cantidad > 0:  # COMPRA - promedio ponderado
+                valor_anterior = stock_cantidad * stock_precio
+                valor_nuevo = cantidad * precio
+                stock_cantidad += cantidad
+                if stock_cantidad > 0:
+                    stock_precio = (valor_anterior + valor_nuevo) / stock_cantidad
+            elif cantidad < 0:  # VENTA - solo reduce cantidad
+                stock_cantidad += cantidad  # cantidad es negativo
+                # Precio promedio no cambia en ventas
+            
+            cantidad_stock_final = stock_cantidad
+            precio_stock_final = stock_precio
+            
+            # ========== MATERIALIZAR VALORES ==========
+            if moneda_tipo == "ARS":
+                # Col O (15): IVA = |Gastos| * 0.1736
+                iva = abs(gastos) * 0.1736 if gastos else 0
+                ws.cell(row, 15, iva if gastos >= 0 else -iva)
+            else:  # USD
+                # Col R (18): IVA = |Gastos| * 0.1736
+                iva = abs(gastos) * 0.1736 if gastos else 0
+                ws.cell(row, 18, iva if gastos >= 0 else -iva)
+            
+            # Running stock columns
+            ws.cell(row, col_stock_ini_qty, cantidad_stock_inicial)
+            
+            if moneda_tipo == "ARS":
+                ws.cell(row, col_stock_ini_price, precio_stock_inicial)
+            else:
+                ws.cell(row, col_stock_ini_price, precio_stock_inicial_usd)
+            
+            ws.cell(row, col_costo, costo)  # Ya es negativo para ventas
+            ws.cell(row, col_neto, neto)
+            ws.cell(row, col_resultado, resultado)
+            ws.cell(row, col_stock_fin_qty, cantidad_stock_final)
+            
+            if moneda_tipo == "ARS":
+                ws.cell(row, col_stock_fin_price, precio_stock_final if cantidad_stock_final != 0 else 0)
+            else:
+                precio_stock_final_usd = precio_stock_final / valor_usd_dia if valor_usd_dia > 0 and cantidad_stock_final != 0 else 0
+                ws.cell(row, col_stock_fin_price, precio_stock_final_usd)
+            
+            # Actualizar código previo para siguiente iteración
+            prev_cod_instrum = cod_instrum
     
     def _to_float(self, value) -> float:
         """Convierte un valor a float de forma segura."""
@@ -688,6 +745,42 @@ class GalloVisualMerger:
             return float(value)
         except:
             return 0.0
+    
+    def _deep_copy_workbook(self, wb: Workbook) -> Workbook:
+        """Crea una copia profunda del workbook guardando a BytesIO y recargando."""
+        from io import BytesIO
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        return load_workbook(buffer)
+    
+    def _get_posicion_inicial(self, wb: Workbook, cod_instrum: str, is_gallo: bool) -> Tuple[float, float]:
+        """
+        Obtiene (cantidad, precio) de la hoja de posición correspondiente.
+        
+        Args:
+            wb: Workbook consolidado
+            cod_instrum: Código del instrumento (limpio)
+            is_gallo: True si origen es Gallo, False si es Visual
+            
+        Returns:
+            Tuple (cantidad, precio). Si no encuentra, retorna (0, 0).
+        """
+        pos_sheet = 'Posicion Inicial Gallo' if is_gallo else 'Posicion Final Gallo'
+        
+        if pos_sheet not in wb.sheetnames:
+            return (0.0, 0.0)
+        
+        pos_ws = wb[pos_sheet]
+        for r in range(2, pos_ws.max_row + 1):
+            pos_cod = pos_ws.cell(r, 4).value  # Col D = Codigo especie
+            if pos_cod and self._clean_codigo(str(pos_cod)) == cod_instrum:
+                cantidad = self._to_float(pos_ws.cell(r, 9).value)  # Col I = cantidad
+                precio = self._to_float(pos_ws.cell(r, 16).value)   # Col P = Precio a Utilizar
+                return (cantidad, precio)
+        
+        # No encontrado - retornar 0, 0 (válido para instrumentos nuevos)
+        return (0.0, 0.0)
     
     def _create_posicion_inicial(self, wb: Workbook):
         """Crea hoja Posicion Inicial Gallo con las mismas columnas que Posicion Final."""
@@ -2514,7 +2607,8 @@ class GalloVisualMerger:
                     ws_dst.cell(row=cell.row, column=cell.column, value=cell.value)
 
 
-def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = None) -> str:
+def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = None, 
+                       output_mode: str = "formulas") -> str:
     """
     Función principal para ejecutar el merge.
     
@@ -2522,19 +2616,31 @@ def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = Non
         gallo_path: Ruta al Excel de Gallo
         visual_path: Ruta al Excel de Visual
         output_path: Ruta de salida (opcional, genera nombre automático)
+        output_mode: "formulas" (default), "values", or "both"
     
     Returns:
-        Ruta del archivo generado
+        Ruta del archivo generado (o tupla de rutas si output_mode="both")
     """
     merger = GalloVisualMerger(gallo_path, visual_path)
-    wb = merger.merge()
+    wb_formulas, wb_values = merger.merge(output_mode=output_mode)
     
     if output_path is None:
         # Generar nombre basado en el archivo de entrada
         gallo_name = Path(gallo_path).stem.replace('_Gallo_Generado_OK', '')
         output_path = f"{gallo_name}_Merge_Consolidado.xlsx"
     
-    wb.save(output_path)
+    if output_mode == "formulas" and wb_formulas:
+        wb_formulas.save(output_path)
+        return output_path
+    elif output_mode == "values" and wb_values:
+        wb_values.save(output_path)
+        return output_path
+    elif output_mode == "both":
+        wb_formulas.save(output_path)
+        values_path = output_path.replace('.xlsx', '_values.xlsx')
+        wb_values.save(values_path)
+        return output_path, values_path
+    
     return output_path
 
 
