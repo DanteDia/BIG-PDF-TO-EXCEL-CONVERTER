@@ -36,7 +36,6 @@ from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
 from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postprocess_visual_workbook
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
-from pdf_converter.datalab.datalab_excel_reader import DatalabExcelReader
 from openpyxl import load_workbook
 
 # Page config
@@ -181,7 +180,8 @@ def convert_pdf_to_excel_streamlit(pdf_bytes: bytes, pdf_name: str, format_type:
     excel_path = os.path.join(temp_dir, f"{format_type}_estructurado.xlsx")
     convert_markdown_to_excel(md_path, excel_path, apply_postprocess=True)
     
-    return excel_path, comitente_number, comitente_name
+    # Devolver también el markdown para uso posterior (PDF export)
+    return excel_path, comitente_number, comitente_name, markdown_content
 
 
 # File uploaders
@@ -235,7 +235,7 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         step += 1
                         progress_bar.progress(int(step / (total_steps + 1) * 100))
                         
-                        gallo_excel, gallo_comitente_num, gallo_comitente_name = convert_pdf_to_excel_streamlit(
+                        gallo_excel, gallo_comitente_num, gallo_comitente_name, gallo_markdown = convert_pdf_to_excel_streamlit(
                             gallo_file.getvalue(),
                             gallo_file.name,
                             "gallo",
@@ -247,6 +247,7 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                             results['gallo'] = f.read()
                         results['gallo_comitente_num'] = gallo_comitente_num
                         results['gallo_comitente_name'] = gallo_comitente_name
+                        results['gallo_markdown'] = gallo_markdown
                     
                     # Process Visual if provided
                     if visual_file:
@@ -254,7 +255,7 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         step += 1
                         progress_bar.progress(int(step / (total_steps + 1) * 100))
                         
-                        visual_excel, visual_comitente_num, visual_comitente_name = convert_pdf_to_excel_streamlit(
+                        visual_excel, visual_comitente_num, visual_comitente_name, visual_markdown = convert_pdf_to_excel_streamlit(
                             visual_file.getvalue(),
                             visual_file.name,
                             "visual",
@@ -266,6 +267,7 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                             results['visual'] = f.read()
                         results['visual_comitente_num'] = visual_comitente_num
                         results['visual_comitente_name'] = visual_comitente_name
+                        results['visual_markdown'] = visual_markdown
                     
                     progress_bar.progress(100)
                     status_text.text("✅ Procesamiento completado!")
@@ -428,26 +430,25 @@ if st.session_state.processed_files is not None:
         
         # Generar PDF automáticamente si no existe, o con botón si el usuario quiere regenerar
         def generate_pdf_report():
-            """Genera el PDF del reporte usando Datalab para leer valores de fórmulas."""
+            """Genera el PDF del reporte usando los markdowns ya convertidos."""
             # Guardar Excel temporalmente
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
                 tmp.write(st.session_state.processed_files['merged'])
                 tmp_excel_path = tmp.name
             
-            # Obtener API key de Datalab
-            datalab_api_key = os.environ.get("DATALAB_API_KEY", "").strip()
-            if not datalab_api_key:
-                raise ValueError("DATALAB_API_KEY no configurada")
+            # Combinar markdowns de Gallo + Visual (ya los tenemos, no reconvertir!)
+            gallo_md = st.session_state.processed_files.get('gallo_markdown', '')
+            visual_md = st.session_state.processed_files.get('visual_markdown', '')
             
-            # Convertir Excel a Markdown con Datalab (para leer valores de fórmulas)
-            reader = DatalabExcelReader(datalab_api_key)
-            datalab_markdown = reader.convert_to_markdown(tmp_excel_path)
+            # Usar el markdown de Visual como fuente principal (tiene el formato correcto)
+            # Si solo hay Gallo, usar ese
+            combined_markdown = visual_md or gallo_md
             
-            if not datalab_markdown:
-                raise RuntimeError("No se pudo convertir Excel a markdown con Datalab")
+            if not combined_markdown:
+                raise RuntimeError("No hay markdown disponible para generar PDF")
             
-            # Crear exportador con markdown de Datalab
+            # Crear exportador con markdown existente
             cliente_info = {
                 'numero': comitente_num or 'XXXXX',
                 'nombre': comitente_name or 'CLIENTE'
@@ -455,7 +456,7 @@ if st.session_state.processed_files is not None:
             exporter = ExcelToPdfExporter(
                 tmp_excel_path, 
                 cliente_info, 
-                datalab_markdown=datalab_markdown
+                datalab_markdown=combined_markdown
             )
             exporter.periodo_inicio = pdf_periodo_inicio
             exporter.periodo_fin = pdf_periodo_fin
