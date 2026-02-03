@@ -27,56 +27,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import io
-import sys
-import os
-
-
-def _read_excel_with_com(excel_path: str) -> Dict[str, List[List[Any]]]:
-    """
-    Lee un Excel usando COM automation para obtener valores calculados de fórmulas.
-    Solo funciona en Windows con Excel instalado.
-    
-    Returns:
-        Dict con nombre_hoja -> lista de filas (cada fila es lista de valores)
-    """
-    try:
-        import pythoncom
-        import win32com.client
-        
-        pythoncom.CoInitialize()
-        xl = win32com.client.DispatchEx('Excel.Application')
-        xl.Visible = False
-        xl.DisplayAlerts = False
-        
-        abs_path = os.path.abspath(excel_path)
-        wb = xl.Workbooks.Open(abs_path)
-        
-        result = {}
-        for sheet in wb.Sheets:
-            sheet_name = sheet.Name
-            used_range = sheet.UsedRange
-            if used_range:
-                # Leer todo el rango usado
-                values = used_range.Value
-                if values:
-                    # Convertir a lista de listas
-                    if isinstance(values[0], tuple):
-                        result[sheet_name] = [list(row) for row in values]
-                    else:
-                        # Solo una fila
-                        result[sheet_name] = [list(values)]
-                else:
-                    result[sheet_name] = []
-            else:
-                result[sheet_name] = []
-        
-        wb.Close(False)
-        xl.Quit()
-        
-        return result
-    except Exception as e:
-        # Si falla COM, retornar None para usar openpyxl
-        return None
 
 
 class ExcelToPdfExporter:
@@ -91,24 +41,50 @@ class ExcelToPdfExporter:
     SECTION_BG = colors.Color(0.85, 0.85, 0.9)  # Gris azulado
     SUBSECTION_BG = colors.Color(0.9, 0.9, 0.95)  # Gris más claro
     
-    def __init__(self, excel_path: str, cliente_info: Dict[str, str] = None):
+    def __init__(self, excel_path: str, cliente_info: Dict[str, str] = None, 
+                 datalab_api_key: str = None, datalab_markdown: str = None):
         """
         Inicializa el exportador.
         
         Args:
             excel_path: Ruta al Excel consolidado
             cliente_info: Diccionario con info del cliente (numero, nombre)
+            datalab_api_key: API key de Datalab para leer valores de fórmulas
+            datalab_markdown: Markdown ya convertido por Datalab (recomendado para evitar re-conversión)
         """
         self.excel_path = Path(excel_path)
         self.wb = load_workbook(excel_path, data_only=True)
         
-        # Intentar leer valores calculados usando Excel COM (Windows con Excel)
-        # Esto resuelve el problema de fórmulas no evaluadas
-        self._com_data = None
-        if sys.platform == 'win32':
-            self._com_data = _read_excel_with_com(str(excel_path))
-            if self._com_data:
-                print("[INFO] Usando Excel COM para leer valores calculados")
+        # Datalab es el único método para leer valores de fórmulas (cross-platform)
+        self._datalab_reader = None
+        
+        # 1. Usar markdown pre-convertido si está disponible (más eficiente)
+        if datalab_markdown:
+            try:
+                from .datalab_excel_reader import DatalabExcelReader
+                print("[INFO] Usando markdown Datalab pre-convertido")
+                self._datalab_reader = DatalabExcelReader(datalab_api_key or "")
+                self._datalab_reader.parse_all_sections(datalab_markdown)
+                print(f"[INFO] Secciones parseadas: {list(self._datalab_reader._parsed_data.keys())}")
+            except Exception as e:
+                print(f"[WARNING] No se pudo parsear Datalab markdown: {e}")
+        
+        # 2. Si no hay markdown pero hay API key, convertir Excel ahora
+        elif datalab_api_key:
+            try:
+                from .datalab_excel_reader import DatalabExcelReader
+                print("[INFO] Convirtiendo Excel con Datalab API...")
+                self._datalab_reader = DatalabExcelReader(datalab_api_key)
+                markdown = self._datalab_reader.convert_to_markdown(str(excel_path))
+                if markdown:
+                    self._datalab_reader.parse_all_sections(markdown)
+                    print(f"[INFO] Secciones parseadas: {list(self._datalab_reader._parsed_data.keys())}")
+            except Exception as e:
+                print(f"[WARNING] No se pudo usar Datalab API: {e}")
+        
+        # 3. Fallback: openpyxl (valores de fórmulas serán None)
+        if not self._datalab_reader:
+            print("[WARNING] Sin Datalab - valores de fórmulas pueden estar vacíos")
         
         # Info del cliente
         self.cliente_info = cliente_info or {
@@ -240,10 +216,58 @@ class ExcelToPdfExporter:
     def _read_sheet_data(self, sheet_name: str) -> Tuple[List[str], List[List[Any]]]:
         """
         Lee datos de una hoja Excel.
+        Usa datos de Datalab parser si están disponibles, sino openpyxl (fallback).
         
         Returns:
             Tuple de (headers, rows)
         """
+        # 1. Usar datos de Datalab parser (recomendado - tiene valores de fórmulas)
+        if self._datalab_reader:
+            return self._read_from_datalab(sheet_name)
+        
+        # 2. Fallback a openpyxl (puede tener valores None para fórmulas)
+        return self._read_from_openpyxl(sheet_name)
+    
+    def _read_from_datalab(self, sheet_name: str) -> Tuple[List[str], List[List[Any]]]:
+        """Lee datos desde el parser Datalab."""
+        # Mapeo de nombre de hoja a sección del parser
+        section_map = {
+            'Boletos': 'boletos',
+            'Resultado Ventas ARS': 'ventas_ars',
+            'Resultado Ventas USD': 'ventas_usd',
+            'Rentas Dividendos ARS': 'rentas_dividendos_ars',
+            'Rentas Dividendos USD': 'rentas_dividendos_usd',
+            'Cauciones': 'cauciones',
+            'Cauciones Tomadoras': 'cauciones',
+            'Cauciones Colocadoras': 'cauciones',
+        }
+        
+        section_key = section_map.get(sheet_name)
+        if not section_key:
+            # No tenemos datos Datalab para esta hoja, usar openpyxl
+            print(f"[DEBUG] Hoja '{sheet_name}' no mapeada a Datalab, usando openpyxl")
+            return self._read_from_openpyxl(sheet_name)
+        
+        # Obtener datos del parser
+        parsed = self._datalab_reader._parsed_data
+        if not parsed:
+            return self._read_from_openpyxl(sheet_name)
+        
+        data = parsed.get(section_key, [])
+        if not data:
+            return [], []
+        
+        # Construir headers y rows desde los dicts
+        headers = list(data[0].keys())
+        rows = []
+        for item in data:
+            row = [item.get(h) for h in headers]
+            rows.append(row)
+        
+        return headers, rows
+    
+    def _read_from_openpyxl(self, sheet_name: str) -> Tuple[List[str], List[List[Any]]]:
+        """Lee datos desde openpyxl (fallback)."""
         if sheet_name not in self.wb.sheetnames:
             return [], []
         
@@ -342,6 +366,25 @@ class ExcelToPdfExporter:
         table.setStyle(style)
         return table
     
+    def _get_col_index(self, headers: List[str], col_name: str, alt_names: List[str] = None) -> int:
+        """
+        Obtiene el índice de una columna por nombre.
+        Busca el nombre exacto o alternativos.
+        """
+        all_names = [col_name] + (alt_names or [])
+        for name in all_names:
+            for i, h in enumerate(headers):
+                if h and name.lower() in h.lower():
+                    return i
+        return -1
+    
+    def _get_value(self, row: List, headers: List[str], col_name: str, alt_names: List[str] = None) -> Any:
+        """Obtiene un valor de una fila por nombre de columna."""
+        idx = self._get_col_index(headers, col_name, alt_names)
+        if idx >= 0 and idx < len(row):
+            return row[idx]
+        return None
+
     def _build_boletos_section(self) -> List:
         """Construye la sección de Boletos."""
         elements = []
@@ -353,55 +396,62 @@ class ExcelToPdfExporter:
             elements.append(Spacer(1, 10*mm))
             return elements
         
-        # Columnas a mostrar (indices del Excel)
-        # Headers: Tipo de Instrumento(0), Concertación(1), Liquidación(2), Nro. Boleto(3), 
-        # Moneda(4), Tipo Operación(5), Cod.Instrum(6), Instrumento Crudo(7), 
-        # InstrumentoConMoneda(8), Cantidad(9), Precio(10), Tipo Cambio(11), 
-        # Bruto(12), Interés(13), Gastos(14), Neto Calculado(15)
-        
-        # Mapeo de columnas a mostrar
+        # Mapeo de columnas a mostrar: (nombre_excel, nombre_display, formato)
         col_map = [
-            (1, 'Concertación', 'date'),
-            (2, 'Liquidación', 'date'),
-            (3, 'Nro. Boleto', 'integer'),
-            (4, 'Moneda', 'text'),
-            (5, 'Tipo Operación', 'text'),
-            (6, 'Cod.Instrum', 'integer'),
-            (7, 'Instrumento', 'text'),
-            (9, 'Cantidad', 'number'),
-            (10, 'Precio', 'number'),
-            (11, 'Tipo Cambio', 'number'),
-            (12, 'Bruto', 'number'),
-            (13, 'Interés', 'number'),
-            (14, 'Gastos', 'number'),
-            (15, 'Neto', 'number'),
+            ('Concertación', 'Concertación', 'date'),
+            ('Liquidación', 'Liquidación', 'date'),
+            ('Nro. Boleto', 'Nro. Boleto', 'integer'),
+            ('Moneda', 'Moneda', 'text'),
+            ('Tipo Operación', 'Tipo Operación', 'text'),
+            ('Cod.Instrum', 'Cod.Instrum', 'integer'),
+            ('Instrumento Crudo', 'Instrumento', 'text'),
+            ('Cantidad', 'Cantidad', 'number'),
+            ('Precio', 'Precio', 'number'),
+            ('Tipo Cambio', 'Tipo Cambio', 'number'),
+            ('Bruto', 'Bruto', 'number'),
+            ('Interés', 'Interés', 'number'),
+            ('Gastos', 'Gastos', 'number'),
+            ('Neto Calculado', 'Neto', 'number'),
         ]
+        
+        # Obtener índice de cada columna
+        col_indices = []
+        for col_name, display_name, fmt in col_map:
+            idx = self._get_col_index(headers, col_name)
+            col_indices.append((idx, display_name, fmt))
+        
+        # Índice de Tipo de Instrumento para agrupar
+        tipo_idx = self._get_col_index(headers, 'Tipo de Instrumento')
         
         # Agrupar por tipo de instrumento
         by_tipo = {}
         for row in rows:
-            tipo = row[0] if row[0] else "Otros"
+            tipo = row[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(row) else "Otros"
+            tipo = tipo if tipo else "Otros"
             if tipo not in by_tipo:
                 by_tipo[tipo] = []
             by_tipo[tipo].append(row)
         
         # Ordenar tipos
         tipos_order = ['Acciones', 'Títulos Públicos', 'Obligaciones Negociables', 
-                       'Letras del Tesoro', 'CEDEAR', 'FCI', 'Otros']
+                       'Letras del Tesoro', 'CEDEAR', 'Cedears', 'FCI', 'Otros']
         sorted_tipos = sorted(by_tipo.keys(), 
-                            key=lambda x: tipos_order.index(x) if x in tipos_order else 999)
+                            key=lambda x: next((i for i, t in enumerate(tipos_order) if t.lower() in x.lower()), 999))
         
         for tipo in sorted_tipos:
             tipo_rows = by_tipo[tipo]
             elements.append(Paragraph(tipo, self.styles['SubsectionTitle']))
             
             # Preparar datos para tabla
-            table_headers = [c[1] for c in col_map]
+            table_headers = [c[1] for c in col_indices]
             table_rows = []
-            col_formatters = {i: c[2] for i, c in enumerate(col_map)}
+            col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
             
             for row in tipo_rows:
-                table_row = [row[c[0]] if c[0] < len(row) else None for c in col_map]
+                table_row = []
+                for idx, _, _ in col_indices:
+                    val = row[idx] if idx >= 0 and idx < len(row) else None
+                    table_row.append(val)
                 table_rows.append(table_row)
             
             # Anchos de columnas (total ~270mm para landscape A4)
@@ -429,50 +479,55 @@ class ExcelToPdfExporter:
             elements.append(Spacer(1, 10*mm))
             return elements
         
-        # Columnas para ARS: Origen(0), Tipo de Instrumento(1), Instrumento(2), Cod.Instrum(3),
-        # Concertación(4), Liquidación(5), Moneda(6), Tipo Operación(7), Cantidad(8), Precio(9),
-        # Bruto(10), Interés(11), Tipo de Cambio(12), Gastos(13), IVA(14), Resultado(15)
-        
+        # Columnas a mostrar por moneda usando nombres
         if moneda == 'ARS':
             col_map = [
-                (4, 'Concertación', 'date'),
-                (5, 'Liquidación', 'date'),
-                (6, 'Moneda', 'text'),
-                (7, 'Tipo Operación', 'text'),
-                (8, 'Cantidad', 'number'),
-                (9, 'Precio', 'number'),
-                (10, 'Bruto', 'number'),
-                (11, 'Interés', 'number'),
-                (12, 'Tipo de Cambio', 'number'),
-                (13, 'Gastos', 'number'),
-                (14, 'IVA', 'number'),
-                (15, 'Resultado', 'number'),
+                ('Concertación', 'Concertación', 'date'),
+                ('Liquidación', 'Liquidación', 'date'),
+                ('Moneda', 'Moneda', 'text'),
+                ('Tipo Operación', 'Tipo Op.', 'text'),
+                ('Cantidad', 'Cantidad', 'number'),
+                ('Precio', 'Precio', 'number'),
+                ('Bruto', 'Bruto', 'number'),
+                ('Interés', 'Interés', 'number'),
+                ('Tipo de Cambio', 'T.C.', 'number'),
+                ('Gastos', 'Gastos', 'number'),
+                ('IVA', 'IVA', 'number'),
+                ('Neto Calculado', 'Resultado', 'number'),
             ]
         else:  # USD
-            # Columnas USD: similar pero con columnas adicionales
             col_map = [
-                (4, 'Concertación', 'date'),
-                (5, 'Liquidación', 'date'),
-                (6, 'Moneda', 'text'),
-                (7, 'Tipo Operación', 'text'),
-                (8, 'Cantidad', 'number'),
-                (9, 'Precio', 'number'),
-                (12, 'Bruto USD', 'number'),
-                (13, 'Interés', 'number'),
-                (14, 'Tipo de Cambio', 'number'),
-                (16, 'Gastos', 'number'),
-                (17, 'IVA', 'number'),
-                (18, 'Resultado', 'number'),
+                ('Concertación', 'Concertación', 'date'),
+                ('Liquidación', 'Liquidación', 'date'),
+                ('Moneda', 'Moneda', 'text'),
+                ('Tipo Operación', 'Tipo Op.', 'text'),
+                ('Cantidad', 'Cantidad', 'number'),
+                ('Precio', 'Precio', 'number'),
+                ('Bruto en USD', 'Bruto USD', 'number'),
+                ('Interés', 'Interés', 'number'),
+                ('Tipo de Cambio', 'T.C.', 'number'),
+                ('Gastos en USD', 'Gastos', 'number'),
+                ('IVA', 'IVA', 'number'),
+                ('Resultado Calculado(final)', 'Resultado', 'number'),
             ]
+        
+        # Obtener índices de columnas
+        col_indices = []
+        for col_name, display_name, fmt in col_map:
+            idx = self._get_col_index(headers, col_name)
+            col_indices.append((idx, display_name, fmt))
+        
+        # Índices para agrupar
+        tipo_idx = self._get_col_index(headers, 'Tipo de Instrumento')
+        instr_idx = self._get_col_index(headers, 'Instrumento')
         
         # Agrupar por tipo de instrumento e instrumento
         by_tipo = {}
         for row in rows:
-            tipo_idx = 1  # Tipo de Instrumento
-            instr_idx = 2  # Instrumento
-            
-            tipo = row[tipo_idx] if row[tipo_idx] else "Otros"
-            instr = row[instr_idx] if row[instr_idx] else "Sin nombre"
+            tipo = row[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(row) else "Otros"
+            tipo = tipo if tipo else "Otros"
+            instr = row[instr_idx] if instr_idx >= 0 and instr_idx < len(row) else "Sin nombre"
+            instr = instr if instr else "Sin nombre"
             
             if tipo not in by_tipo:
                 by_tipo[tipo] = {}
@@ -490,12 +545,15 @@ class ExcelToPdfExporter:
                 elements.append(Paragraph(f"  {instr}", self.styles['Normal']))
                 
                 # Preparar tabla
-                table_headers = [c[1] for c in col_map]
+                table_headers = [c[1] for c in col_indices]
                 table_rows = []
-                col_formatters = {i: c[2] for i, c in enumerate(col_map)}
+                col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
                 
                 for row in instr_rows:
-                    table_row = [row[c[0]] if c[0] < len(row) else None for c in col_map]
+                    table_row = []
+                    for idx, _, _ in col_indices:
+                        val = row[idx] if idx >= 0 and idx < len(row) else None
+                        table_row.append(val)
                     table_rows.append(table_row)
                 
                 col_widths = [18, 18, 20, 25, 18, 16, 22, 14, 18, 18, 16, 22]
@@ -522,28 +580,39 @@ class ExcelToPdfExporter:
             elements.append(Spacer(1, 10*mm))
             return elements
         
-        # Headers: Instrumento(0), Cod.Instrum(1), Categoría(2), tipo_instrumento(3),
-        # Concertación(4), Liquidación(5), Nro. NDC(6), Tipo Operación(7),
-        # Cantidad(8), Moneda(9), Tipo de Cambio(10), Gastos(11), Importe(12)
-        
+        # Columnas a mostrar por nombre
         col_map = [
-            (4, 'Concertación', 'date'),
-            (5, 'Liquidación', 'date'),
-            (6, 'Nro. NDC', 'integer'),
-            (7, 'Tipo Operación', 'text'),
-            (8, 'Cantidad', 'number'),
-            (9, 'Moneda', 'text'),
-            (10, 'Tipo de Cambio', 'number'),
-            (11, 'Gastos', 'number'),
-            (12, 'Importe', 'number'),
+            ('Concertación', 'Concertación', 'date'),
+            ('Liquidación', 'Liquidación', 'date'),
+            ('Nro. NDC', 'Nro. NDC', 'integer'),
+            ('Tipo Operación', 'Tipo Operación', 'text'),
+            ('Cantidad', 'Cantidad', 'number'),
+            ('Moneda', 'Moneda', 'text'),
+            ('Tipo de Cambio', 'T.C.', 'number'),
+            ('Gastos', 'Gastos', 'number'),
+            ('Importe', 'Importe', 'number'),
         ]
+        
+        # Obtener índices de columnas
+        col_indices = []
+        for col_name, display_name, fmt in col_map:
+            idx = self._get_col_index(headers, col_name)
+            col_indices.append((idx, display_name, fmt))
+        
+        # Índices para agrupar
+        cat_idx = self._get_col_index(headers, 'Categoría')
+        tipo_instr_idx = self._get_col_index(headers, 'tipo_instrumento', ['Tipo de Instrumento'])
+        instr_idx = self._get_col_index(headers, 'Instrumento')
         
         # Agrupar por categoría y tipo_instrumento
         by_cat = {}
         for row in rows:
-            cat = row[2] if row[2] else "Otros"  # Categoría
-            tipo_instr = row[3] if row[3] else "Sin tipo"  # tipo_instrumento
-            instr = row[0] if row[0] else "Sin nombre"  # Instrumento
+            cat = row[cat_idx] if cat_idx >= 0 and cat_idx < len(row) else "Otros"
+            cat = cat if cat else "Otros"
+            tipo_instr = row[tipo_instr_idx] if tipo_instr_idx >= 0 and tipo_instr_idx < len(row) else "Sin tipo"
+            tipo_instr = tipo_instr if tipo_instr else "Sin tipo"
+            instr = row[instr_idx] if instr_idx >= 0 and instr_idx < len(row) else "Sin nombre"
+            instr = instr if instr else "Sin nombre"
             
             if cat not in by_cat:
                 by_cat[cat] = {}
@@ -574,12 +643,15 @@ class ExcelToPdfExporter:
                                                           fontSize=8,
                                                           textColor=colors.grey)))
                     
-                    table_headers = [c[1] for c in col_map]
+                    table_headers = [c[1] for c in col_indices]
                     table_rows = []
-                    col_formatters = {i: c[2] for i, c in enumerate(col_map)}
+                    col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
                     
                     for row in instr_rows:
-                        table_row = [row[c[0]] if c[0] < len(row) else None for c in col_map]
+                        table_row = []
+                        for idx, _, _ in col_indices:
+                            val = row[idx] if idx >= 0 and idx < len(row) else None
+                            table_row.append(val)
                         table_rows.append(table_row)
                     
                     col_widths = [18, 18, 15, 28, 18, 22, 18, 18, 25]
@@ -612,10 +684,11 @@ class ExcelToPdfExporter:
             headers, rows = self._read_sheet_data('Cauciones')
             
             if rows:
-                # Filtrar por tipo de operación (formato antiguo con hoja única)
+                # Filtrar por tipo de operación usando nombre de columna
+                tipo_op_idx = self._get_col_index(headers, 'Operación', ['Tipo Operación'])
                 filtered_rows = []
                 for row in rows:
-                    operacion = str(row[3]).upper() if len(row) > 3 and row[3] else ""
+                    operacion = str(row[tipo_op_idx]).upper() if tipo_op_idx >= 0 and tipo_op_idx < len(row) and row[tipo_op_idx] else ""
                     if tipo == "tomadoras" and "TOM" in operacion:
                         filtered_rows.append(row)
                     elif tipo == "colocadoras" and "COL" in operacion:
@@ -627,27 +700,39 @@ class ExcelToPdfExporter:
             elements.append(Spacer(1, 10*mm))
             return elements
         
+        # Columnas a mostrar por nombre
         col_map = [
-            (0, 'Concertación', 'date'),
-            (1, 'Plazo', 'integer'),
-            (2, 'Liquidación', 'date'),
-            (3, 'Operación', 'text'),
-            (4, '# Boleto', 'integer'),
-            (5, 'Contado', 'number'),
-            (6, 'Futuro', 'number'),
-            (7, 'Tipo de cambio', 'number'),
-            (8, 'Tasa (%)', 'number'),
-            (9, 'Interés Bruto', 'number'),
-            (10, 'Interés Devengad', 'number'),
-            (11, 'Aranceles', 'number'),
-            (12, 'Derechos', 'number'),
-            (13, 'Costo financiero', 'number'),
+            ('Concertación', 'Concertación', 'date'),
+            ('Plazo', 'Plazo', 'integer'),
+            ('Liquidación', 'Liquidación', 'date'),
+            ('Operación', 'Operación', 'text'),
+            ('# Boleto', '# Boleto', 'integer'),
+            ('Contado', 'Contado', 'number'),
+            ('Futuro', 'Futuro', 'number'),
+            ('Tipo de cambio', 'T.C.', 'number'),
+            ('Tasa (%)', 'Tasa (%)', 'number'),
+            ('Interés Bruto', 'Int. Bruto', 'number'),
+            ('Interés Devengad', 'Int. Dev.', 'number'),
+            ('Aranceles', 'Aranceles', 'number'),
+            ('Derechos', 'Derechos', 'number'),
+            ('Costo financiero', 'Costo Fin.', 'number'),
         ]
+        
+        # Obtener índices de columnas
+        col_indices = []
+        for col_name, display_name, fmt in col_map:
+            idx = self._get_col_index(headers, col_name)
+            col_indices.append((idx, display_name, fmt))
+        
+        # Índice de moneda para agrupar
+        moneda_idx = self._get_col_index(headers, 'Moneda')
+        # Índice de costo financiero para totales
+        costo_idx = self._get_col_index(headers, 'Costo financiero')
         
         # Agrupar por moneda
         by_moneda = {}
         for row in rows:
-            moneda = row[14] if len(row) > 14 and row[14] else "Pesos"
+            moneda = row[moneda_idx] if moneda_idx >= 0 and moneda_idx < len(row) and row[moneda_idx] else "Pesos"
             if moneda not in by_moneda:
                 by_moneda[moneda] = []
             by_moneda[moneda].append(row)
@@ -658,12 +743,15 @@ class ExcelToPdfExporter:
             
             elements.append(Paragraph(f"  {moneda}", self.styles['SubsectionTitle']))
             
-            table_headers = [c[1] for c in col_map]
+            table_headers = [c[1] for c in col_indices]
             table_rows = []
-            col_formatters = {i: c[2] for i, c in enumerate(col_map)}
+            col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
             
             for row in by_moneda[moneda]:
-                table_row = [row[c[0]] if c[0] < len(row) else None for c in col_map]
+                table_row = []
+                for idx, _, _ in col_indices:
+                    val = row[idx] if idx >= 0 and idx < len(row) else None
+                    table_row.append(val)
                 table_rows.append(table_row)
             
             col_widths = [18, 10, 18, 25, 15, 22, 22, 16, 14, 18, 18, 15, 14, 18]
@@ -672,8 +760,14 @@ class ExcelToPdfExporter:
             if table:
                 elements.append(table)
             
-            # Total
-            total_cf = sum(float(r[13] or 0) for r in by_moneda[moneda])
+            # Total usando índice de columna
+            total_cf = 0.0
+            for r in by_moneda[moneda]:
+                val = r[costo_idx] if costo_idx >= 0 and costo_idx < len(r) else 0
+                try:
+                    total_cf += float(val or 0)
+                except (ValueError, TypeError):
+                    pass
             elements.append(Paragraph(f"Totales: {self._format_number(total_cf)}", 
                                      self.styles['Normal']))
             elements.append(Spacer(1, 3*mm))
@@ -686,13 +780,24 @@ class ExcelToPdfExporter:
         
         Calcula los totales directamente de las hojas de datos,
         ya que las fórmulas de Excel no se evalúan al guardar con openpyxl.
+        Si tenemos valores de Datalab o COM, los usamos directamente.
         """
         elements = []
         elements.append(Paragraph("Resumen", self.styles['SectionTitle']))
         
-        # Calcular totales directamente de las hojas de datos
-        ventas_ars = self._calculate_ventas_total('Resultado Ventas ARS')
-        ventas_usd = self._calculate_ventas_total('Resultado Ventas USD')
+        # Usar valores de Datalab si están disponibles (para Streamlit Cloud)
+        datalab_resumen = None
+        if self._datalab_reader and self._datalab_reader._parsed_data:
+            datalab_resumen = self._datalab_reader.get_resumen()
+        
+        if datalab_resumen:
+            ventas_ars = datalab_resumen.get('ventas_ars', 0.0)
+            ventas_usd = datalab_resumen.get('ventas_usd', 0.0)
+            print(f"[INFO] Usando valores Datalab: ARS={ventas_ars:,.2f}, USD={ventas_usd:,.2f}")
+        else:
+            # Calcular totales directamente de las hojas de datos
+            ventas_ars = self._calculate_ventas_total('Resultado Ventas ARS')
+            ventas_usd = self._calculate_ventas_total('Resultado Ventas USD')
         
         rentas_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Rentas', 'AMORTIZACION'])
         dividendos_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Dividendos'])

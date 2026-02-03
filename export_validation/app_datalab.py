@@ -433,12 +433,15 @@ if st.session_state.processed_files is not None:
                 tmp.write(st.session_state.processed_files['merged'])
                 tmp_excel_path = tmp.name
             
+            # Obtener API key de Datalab para fallback cuando no hay Excel COM
+            datalab_api_key = os.environ.get("DATALAB_API_KEY", "").strip() or None
+            
             # Crear exportador
             cliente_info = {
                 'numero': comitente_num or 'XXXXX',
                 'nombre': comitente_name or 'CLIENTE'
             }
-            exporter = ExcelToPdfExporter(tmp_excel_path, cliente_info)
+            exporter = ExcelToPdfExporter(tmp_excel_path, cliente_info, datalab_api_key=datalab_api_key)
             exporter.periodo_inicio = pdf_periodo_inicio
             exporter.periodo_fin = pdf_periodo_fin
             exporter.anio = int(pdf_anio)
