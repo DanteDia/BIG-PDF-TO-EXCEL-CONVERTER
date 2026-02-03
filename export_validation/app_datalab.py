@@ -36,6 +36,7 @@ from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
 from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postprocess_visual_workbook
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
+from pdf_converter.datalab.datalab_excel_reader import DatalabExcelReader
 from openpyxl import load_workbook
 
 # Page config
@@ -119,8 +120,9 @@ st.markdown("""
     <h4>🎯 Cómo funciona:</h4>
     <ol>
         <li><strong>Carga los PDFs</strong>: Sube el reporte Gallo y/o Visual</li>
-        <li><strong>Procesamiento</strong>: Extracción y estructuración automática</li>
-        <li><strong>Excel estructurado</strong>: Con todas las columnas necesarias</li>
+        <li><strong>Procesamiento</strong>: Extracción y estructuración automática con OCR</li>
+        <li><strong>Excel estructurado</strong>: Con todas las columnas necesarias y fórmulas</li>
+        <li><strong>PDF Resumen Impositivo</strong>: Generación automática del reporte final en PDF</li>
     </ol>
     <p><strong>✨ Hojas generadas:</strong> Boletos | Resultado Ventas ARS/USD | Rentas Dividendos ARS/USD | Resumen | Posición Títulos</p>
 </div>
@@ -426,22 +428,35 @@ if st.session_state.processed_files is not None:
         
         # Generar PDF automáticamente si no existe, o con botón si el usuario quiere regenerar
         def generate_pdf_report():
-            """Genera el PDF del reporte."""
+            """Genera el PDF del reporte usando Datalab para leer valores de fórmulas."""
             # Guardar Excel temporalmente
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
                 tmp.write(st.session_state.processed_files['merged'])
                 tmp_excel_path = tmp.name
             
-            # Obtener API key de Datalab para fallback cuando no hay Excel COM
-            datalab_api_key = os.environ.get("DATALAB_API_KEY", "").strip() or None
+            # Obtener API key de Datalab
+            datalab_api_key = os.environ.get("DATALAB_API_KEY", "").strip()
+            if not datalab_api_key:
+                raise ValueError("DATALAB_API_KEY no configurada")
             
-            # Crear exportador
+            # Convertir Excel a Markdown con Datalab (para leer valores de fórmulas)
+            reader = DatalabExcelReader(datalab_api_key)
+            datalab_markdown = reader.convert_to_markdown(tmp_excel_path)
+            
+            if not datalab_markdown:
+                raise RuntimeError("No se pudo convertir Excel a markdown con Datalab")
+            
+            # Crear exportador con markdown de Datalab
             cliente_info = {
                 'numero': comitente_num or 'XXXXX',
                 'nombre': comitente_name or 'CLIENTE'
             }
-            exporter = ExcelToPdfExporter(tmp_excel_path, cliente_info, datalab_api_key=datalab_api_key)
+            exporter = ExcelToPdfExporter(
+                tmp_excel_path, 
+                cliente_info, 
+                datalab_markdown=datalab_markdown
+            )
             exporter.periodo_inicio = pdf_periodo_inicio
             exporter.periodo_fin = pdf_periodo_fin
             exporter.anio = int(pdf_anio)
