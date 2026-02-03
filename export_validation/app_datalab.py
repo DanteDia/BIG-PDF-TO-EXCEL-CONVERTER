@@ -36,7 +36,11 @@ from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
 from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postprocess_visual_workbook
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
+from pdf_converter.datalab import excel_to_pdf as excel_to_pdf_module
 from openpyxl import load_workbook
+
+# Debug: mostrar versión del módulo PDF
+print(f"[DEBUG] excel_to_pdf version: {getattr(excel_to_pdf_module, '__version__', 'unknown')}")
 
 # Page config
 st.set_page_config(

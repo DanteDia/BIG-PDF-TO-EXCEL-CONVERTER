@@ -30,10 +30,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import io
 
+# Version para debugging en Streamlit Cloud
+__version__ = "2.0.0-datalab"
+
 
 class ExcelToPdfExporter:
     """
     Exporta un Excel consolidado (merge Gallo+Visual) a PDF con formato Visual.
+    
+    Versión 2.0: Usa Datalab markdown para leer valores de fórmulas.
     """
     
     # Colores corporativos
