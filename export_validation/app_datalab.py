@@ -37,6 +37,7 @@ from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postpr
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
 from pdf_converter.datalab import excel_to_pdf as excel_to_pdf_module
+from pdf_converter.datalab.datalab_excel_reader import DatalabExcelReader
 from openpyxl import load_workbook
 
 # Debug: mostrar versión del módulo PDF
@@ -296,11 +297,30 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         merger = GalloVisualMerger(gallo_temp, visual_temp, str(aux_data_dir))
                         merged_wb = merger.merge()
                         
-                        # Save to bytes
-                        output_buffer = io.BytesIO()
-                        merged_wb.save(output_buffer)
-                        output_buffer.seek(0)
-                        results['merged'] = output_buffer.read()
+                        # Save merged Excel to temp file
+                        merged_excel_path = os.path.join(temp_dir, "merged_resumen.xlsx")
+                        merged_wb.save(merged_excel_path)
+                        
+                        # Read bytes for download
+                        with open(merged_excel_path, "rb") as f:
+                            results['merged'] = f.read()
+                        
+                        # ======== CONVERTIR EXCEL A MARKDOWN PARA PDF ========
+                        status_text.text("🔄 Preparando datos para PDF (esto puede tardar unos minutos)...")
+                        
+                        api_key = os.environ.get("DATALAB_API_KEY", "").strip()
+                        if api_key:
+                            try:
+                                reader = DatalabExcelReader(api_key)
+                                merged_markdown = reader.convert_to_markdown(merged_excel_path)
+                                if merged_markdown:
+                                    results['merged_markdown'] = merged_markdown
+                                    status_text.text("✅ Datos para PDF preparados!")
+                                else:
+                                    status_text.text("⚠️ No se pudo preparar markdown para PDF")
+                            except Exception as e:
+                                print(f"[WARNING] Error convirtiendo Excel a markdown: {e}")
+                                status_text.text("⚠️ PDF puede tener datos incompletos")
                         
                         status_text.text("✅ Resumen Impositivo generado!")
                     
@@ -434,25 +454,20 @@ if st.session_state.processed_files is not None:
         
         # Generar PDF automáticamente si no existe, o con botón si el usuario quiere regenerar
         def generate_pdf_report():
-            """Genera el PDF del reporte usando los markdowns ya convertidos."""
+            """Genera el PDF del reporte usando el markdown del Excel merge."""
             # Guardar Excel temporalmente
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
                 tmp.write(st.session_state.processed_files['merged'])
                 tmp_excel_path = tmp.name
             
-            # Combinar markdowns de Gallo + Visual (ya los tenemos, no reconvertir!)
-            gallo_md = st.session_state.processed_files.get('gallo_markdown', '')
-            visual_md = st.session_state.processed_files.get('visual_markdown', '')
+            # Usar el markdown del Excel merge (tiene los valores de fórmulas calculados)
+            merged_markdown = st.session_state.processed_files.get('merged_markdown', '')
             
-            # Usar el markdown de Visual como fuente principal (tiene el formato correcto)
-            # Si solo hay Gallo, usar ese
-            combined_markdown = visual_md or gallo_md
+            if not merged_markdown:
+                raise RuntimeError("No hay markdown del Excel disponible. Reprocese los PDFs.")
             
-            if not combined_markdown:
-                raise RuntimeError("No hay markdown disponible para generar PDF")
-            
-            # Crear exportador con markdown existente
+            # Crear exportador con markdown del Excel
             cliente_info = {
                 'numero': comitente_num or 'XXXXX',
                 'nombre': comitente_name or 'CLIENTE'
@@ -460,7 +475,7 @@ if st.session_state.processed_files is not None:
             exporter = ExcelToPdfExporter(
                 tmp_excel_path, 
                 cliente_info, 
-                datalab_markdown=combined_markdown
+                datalab_markdown=merged_markdown
             )
             exporter.periodo_inicio = pdf_periodo_inicio
             exporter.periodo_fin = pdf_periodo_fin
