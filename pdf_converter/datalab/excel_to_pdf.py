@@ -300,7 +300,8 @@ class ExcelToPdfExporter:
     
     def _create_table(self, headers: List[str], rows: List[List[Any]], 
                       col_widths: List[float] = None,
-                      col_formatters: Dict[int, str] = None) -> Table:
+                      col_formatters: Dict[int, str] = None,
+                      font_size: int = 6) -> Table:
         """
         Crea una tabla formateada.
         
@@ -309,6 +310,7 @@ class ExcelToPdfExporter:
             rows: Lista de filas de datos
             col_widths: Anchos de columnas en mm
             col_formatters: Diccionario {col_index: 'date'|'number'|'integer'|'text'}
+            font_size: Tamaño de fuente para el cuerpo (default 6)
         """
         if not headers:
             return None
@@ -327,6 +329,10 @@ class ExcelToPdfExporter:
                     formatted_row.append(self._format_number(val, 2))
                 elif fmt_type == 'integer':
                     formatted_row.append(self._format_number(val, 0))
+                elif fmt_type == 'text_truncate':
+                    # Truncar texto largo a 25 caracteres
+                    text = str(val) if val is not None else ""
+                    formatted_row.append(text[:28] + ".." if len(text) > 30 else text)
                 else:
                     formatted_row.append(str(val) if val is not None else "")
             formatted_rows.append(formatted_row)
@@ -343,12 +349,12 @@ class ExcelToPdfExporter:
             ('BACKGROUND', (0, 0), (-1, 0), self.HEADER_BG),
             ('TEXTCOLOR', (0, 0), (-1, 0), self.HEADER_TEXT),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 7),
+            ('FONTSIZE', (0, 0), (-1, 0), 6),
             ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
             
             # Body
             ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 7),
+            ('FONTSIZE', (0, 1), (-1, -1), font_size),
             ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
             
             # Números alineados a la derecha
@@ -406,16 +412,16 @@ class ExcelToPdfExporter:
         
         # Mapeo de columnas a mostrar: (nombre_excel, nombre_display, formato)
         col_map = [
-            ('Concertación', 'Concertación', 'date'),
-            ('Liquidación', 'Liquidación', 'date'),
-            ('Nro. Boleto', 'Nro. Boleto', 'integer'),
-            ('Moneda', 'Moneda', 'text'),
-            ('Tipo Operación', 'Tipo Operación', 'text'),
-            ('Cod.Instrum', 'Cod.Instrum', 'integer'),
-            ('Instrumento Crudo', 'Instrumento', 'text'),
+            ('Concertación', 'Fecha', 'date'),
+            ('Liquidación', 'Liquid.', 'date'),
+            ('Nro. Boleto', 'Boleto', 'integer'),
+            ('Moneda', 'Mon.', 'text'),
+            ('Tipo Operación', 'Operación', 'text'),
+            ('Cod.Instrum', 'Cód.', 'integer'),
+            ('Instrumento Crudo', 'Instrumento', 'text_truncate'),
             ('Cantidad', 'Cantidad', 'number'),
             ('Precio', 'Precio', 'number'),
-            ('Tipo Cambio', 'Tipo Cambio', 'number'),
+            ('Tipo Cambio', 'T.C.', 'number'),
             ('Bruto', 'Bruto', 'number'),
             ('Interés', 'Interés', 'number'),
             ('Gastos', 'Gastos', 'number'),
@@ -463,9 +469,10 @@ class ExcelToPdfExporter:
                 table_rows.append(table_row)
             
             # Anchos de columnas (total ~270mm para landscape A4)
-            col_widths = [18, 18, 15, 20, 22, 14, 45, 18, 16, 16, 20, 14, 16, 18]
+            # Fecha, Liquid, Boleto, Mon, Operación, Cód, Instrumento, Cantidad, Precio, TC, Bruto, Interés, Gastos, Neto
+            col_widths = [16, 16, 12, 16, 18, 12, 48, 22, 18, 14, 26, 18, 16, 26]
             
-            table = self._create_table(table_headers, table_rows, col_widths, col_formatters)
+            table = self._create_table(table_headers, table_rows, col_widths, col_formatters, font_size=5)
             if table:
                 elements.append(table)
             elements.append(Spacer(1, 3*mm))
@@ -495,8 +502,8 @@ class ExcelToPdfExporter:
         # Columnas a mostrar por moneda usando nombres
         if moneda == 'ARS':
             col_map = [
-                ('Instrumento', 'Instrumento', 'text'),
-                ('Cod.Instrum', 'Código', 'integer'),
+                ('Instrumento', 'Instrumento', 'text_truncate'),
+                ('Cod.Instrum', 'Cód.', 'integer'),
                 ('Concertación', 'Fecha', 'date'),
                 ('Tipo Operación', 'Tipo Op.', 'text'),
                 ('Cantidad', 'Cantidad', 'number'),
@@ -508,8 +515,8 @@ class ExcelToPdfExporter:
             ]
         else:  # USD
             col_map = [
-                ('Instrumento', 'Instrumento', 'text'),
-                ('Cod.Instrum', 'Código', 'integer'),
+                ('Instrumento', 'Instrumento', 'text_truncate'),
+                ('Cod.Instrum', 'Cód.', 'integer'),
                 ('Concertación', 'Fecha', 'date'),
                 ('Tipo Operación', 'Tipo Op.', 'text'),
                 ('Cantidad', 'Cantidad', 'number'),
@@ -559,9 +566,10 @@ class ExcelToPdfExporter:
                 table_rows.append(table_row)
             
             # Anchos de columna ajustados
-            col_widths = [40, 18, 18, 25, 18, 22, 22, 18, 16, 24]
+            # Instr, Cód, Fecha, TipoOp, Cantidad, Precio, Bruto, Gastos, IVA, Resultado
+            col_widths = [42, 14, 16, 22, 22, 22, 26, 20, 18, 28]
             
-            table = self._create_table(table_headers, table_rows, col_widths, col_formatters)
+            table = self._create_table(table_headers, table_rows, col_widths, col_formatters, font_size=5)
             if table:
                 elements.append(table)
             elements.append(Spacer(1, 4*mm))
