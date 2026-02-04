@@ -1564,20 +1564,25 @@ class GalloVisualMerger:
                 # Interés según moneda (para interes_devengado)
                 interes = interes_pesos if moneda == "Pesos" else interes_usd
                 interes = float(interes) if interes else 0
+                # Interés siempre positivo
+                interes = abs(interes)
                 
-                # Gastos: tomar el que tenga valor (cualquiera de los dos)
+                # Gastos: tomar el que tenga valor (cualquiera de los dos) - siempre positivo
                 gastos = float(gastos_pesos) if gastos_pesos else (float(gastos_usd) if gastos_usd else 0)
+                gastos = abs(gastos)
                 
                 # Interes Bruto = Futuro - Contado
                 try:
                     contado_val = float(colocado) if colocado else 0
                     futuro_val = float(al_vencimiento) if al_vencimiento else 0
                     interes_bruto = futuro_val - contado_val
+                    # Interés bruto siempre positivo
+                    interes_bruto = abs(interes_bruto)
                 except:
                     interes_bruto = 0
                 
-                # Costo financiero = -interes_bruto + aranceles
-                costo_financiero = -interes_bruto + gastos
+                # Costo financiero = intereses - gastos (siempre positivo)
+                costo_financiero = abs(interes_bruto - gastos)
                 
                 auditoria = f"Origen: Gallo-{gallo_sheet_name}"
                 
@@ -1628,6 +1633,13 @@ class GalloVisualMerger:
                 
                 if not operacion:
                     continue
+                
+                # Convertir a valores positivos
+                interes_bruto = abs(float(interes_bruto)) if interes_bruto else 0
+                interes_devengado = abs(float(interes_devengado)) if interes_devengado else 0
+                aranceles = abs(float(aranceles)) if aranceles else 0
+                derechos = abs(float(derechos)) if derechos else 0
+                costo_financiero = abs(float(costo_financiero)) if costo_financiero else 0
                 
                 # Determinar moneda (asumimos Pesos por default, o buscar en columna si existe)
                 moneda = "Pesos"
@@ -2303,12 +2315,19 @@ class GalloVisualMerger:
             ws.cell(row_out, 29, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Título",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),L{row_out}/100,L{row_out})')
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
-        """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados."""
+        """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados.
+        
+        NOTA: Rentas y dividendos siempre son ganancias, por lo que:
+        - Cantidad siempre positiva (especialmente amortizaciones)
+        - Importe siempre positivo
+        - Se guarda el importe original en columna O como referencia
+        """
         ws = wb.create_sheet("Rentas Dividendos ARS")
         
         headers = ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento',
                    'Concertación', 'Liquidación', 'Nro. NDC', 'Tipo Operación',
-                   'Cantidad', 'Moneda', 'Tipo de Cambio', 'Gastos', 'Importe', 'Origen']
+                   'Cantidad', 'Moneda', 'Tipo de Cambio', 'Gastos', 'Importe', 'Origen',
+                   'Importe Original']  # Col O = referencia del importe original
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -2423,20 +2442,37 @@ class GalloVisualMerger:
             ws.cell(row_out, 6, trans['liquidacion'])
             ws.cell(row_out, 7, trans['nro_ndc'])
             ws.cell(row_out, 8, trans['tipo_operacion'])
-            ws.cell(row_out, 9, trans['cantidad'])
+            # Cantidad siempre positiva (especialmente para amortizaciones)
+            cantidad_val = trans['cantidad']
+            if isinstance(cantidad_val, (int, float)):
+                cantidad_val = abs(cantidad_val)
+            ws.cell(row_out, 9, cantidad_val)
             ws.cell(row_out, 10, trans['moneda'])
             ws.cell(row_out, 11, trans['tipo_cambio'])
             ws.cell(row_out, 12, trans['gastos'])
-            ws.cell(row_out, 13, trans['importe'])
+            # Importe siempre positivo (rentas/dividendos son ganancias)
+            importe_val = trans['importe']
+            importe_original = importe_val  # Guardar original
+            if isinstance(importe_val, (int, float)):
+                importe_val = abs(importe_val)
+            ws.cell(row_out, 13, importe_val)
             ws.cell(row_out, 14, trans['origen'])
+            ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
     
     def _create_rentas_dividendos_usd(self, wb: Workbook):
-        """Crea hoja Rentas Dividendos USD con valores reales filtrados y ordenados."""
+        """Crea hoja Rentas Dividendos USD con valores reales filtrados y ordenados.
+        
+        NOTA: Rentas y dividendos siempre son ganancias, por lo que:
+        - Cantidad siempre positiva (especialmente amortizaciones)
+        - Importe siempre positivo
+        - Se guarda el importe original en columna O como referencia
+        """
         ws = wb.create_sheet("Rentas Dividendos USD")
         
         headers = ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento',
                    'Concertación', 'Liquidación', 'Nro. NDC', 'Tipo Operación',
-                   'Cantidad', 'Moneda', 'Tipo de Cambio', 'Gastos', 'Importe', 'Origen']
+                   'Cantidad', 'Moneda', 'Tipo de Cambio', 'Gastos', 'Importe', 'Origen',
+                   'Importe Original']  # Col O = referencia del importe original
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -2551,12 +2587,22 @@ class GalloVisualMerger:
             ws.cell(row_out, 6, trans['liquidacion'])
             ws.cell(row_out, 7, trans['nro_ndc'])
             ws.cell(row_out, 8, trans['tipo_operacion'])
-            ws.cell(row_out, 9, trans['cantidad'])
+            # Cantidad siempre positiva (especialmente para amortizaciones)
+            cantidad_val = trans['cantidad']
+            if isinstance(cantidad_val, (int, float)):
+                cantidad_val = abs(cantidad_val)
+            ws.cell(row_out, 9, cantidad_val)
             ws.cell(row_out, 10, trans['moneda'])
             ws.cell(row_out, 11, trans['tipo_cambio'])
             ws.cell(row_out, 12, trans['gastos'])
-            ws.cell(row_out, 13, trans['importe'])
+            # Importe siempre positivo (rentas/dividendos son ganancias)
+            importe_val = trans['importe']
+            importe_original = importe_val  # Guardar original
+            if isinstance(importe_val, (int, float)):
+                importe_val = abs(importe_val)
+            ws.cell(row_out, 13, importe_val)
             ws.cell(row_out, 14, trans['origen'])
+            ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
     
     def _create_resumen(self, wb: Workbook):
         """Crea hoja Resumen con totales calculados (no fórmulas).
