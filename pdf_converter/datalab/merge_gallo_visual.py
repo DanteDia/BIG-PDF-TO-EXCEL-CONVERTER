@@ -85,6 +85,7 @@ class GalloVisualMerger:
         self._especies_gallo_cache = {}
         self._cotizacion_cache = {}
         self._precios_iniciales_cache = {}
+        self._precios_iniciales_by_codigo = {}  # codigo -> {ticker, precio}
         
         # Construir caches
         self._build_caches()
@@ -150,6 +151,13 @@ class GalloVisualMerger:
                 ticker_key = str(ticker).upper().strip()
                 self._precios_iniciales_cache[ticker_key] = {
                     'codigo': int(codigo) if codigo else None,
+                    'precio': precio if precio else 0
+                }
+            # Cache adicional por código
+            if codigo:
+                codigo_clean = self._clean_codigo(codigo)
+                self._precios_iniciales_by_codigo[codigo_clean] = {
+                    'ticker': ticker_key if ticker else None,
                     'precio': precio if precio else 0
                 }
     
@@ -805,11 +813,15 @@ class GalloVisualMerger:
                 # Buscar en hoja de posición correspondiente
                 # NOTA: _get_posicion_inicial ahora devuelve Precio Nominal (col U=21)
                 # que ya está dividido por 100 para ON/TP/Letras
-                stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
+                # Para USD, pasamos for_usd=True para que el fallback ya venga en USD
+                is_usd_sheet = (moneda_tipo == "USD")
+                stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo, for_usd=is_usd_sheet)
                 
-                # Para USD: convertir precio de posición a USD inmediatamente
-                if moneda_tipo == "USD" and valor_usd_dia > 0:
+                # Para USD: convertir precio de posición a USD 
+                # SOLO si vino de Posicion (stock_cantidad > 0), porque el fallback ya viene en USD
+                if is_usd_sheet and stock_cantidad > 0 and valor_usd_dia > 0:
                     stock_precio = stock_precio / valor_usd_dia
+                # Nota: si stock_cantidad == 0, el precio ya viene en USD (del fallback)
             # else: usar valores de stock_cantidad y stock_precio de la fila anterior
             
             # Guardar stock inicial para esta fila
@@ -910,7 +922,10 @@ class GalloVisualMerger:
         buffer.seek(0)
         return load_workbook(buffer)
     
-    def _get_posicion_inicial(self, wb: Workbook, cod_instrum: str, is_gallo: bool) -> Tuple[float, float]:
+    # Cotización del dólar MEP al inicio del período (31/12/2024)
+    COTIZACION_INICIO_PERIODO = 1167.806
+    
+    def _get_posicion_inicial(self, wb: Workbook, cod_instrum: str, is_gallo: bool, for_usd: bool = False) -> Tuple[float, float]:
         """
         Obtiene (cantidad, precio_nominal) de la hoja de posición correspondiente.
         
@@ -918,9 +933,12 @@ class GalloVisualMerger:
             wb: Workbook consolidado
             cod_instrum: Código del instrumento (limpio)
             is_gallo: True si origen es Gallo, False si es Visual
+            for_usd: True si el resultado se usará para hoja USD (para fallback en USD)
             
         Returns:
-            Tuple (cantidad, precio_nominal). Si no encuentra, retorna (0, 0).
+            Tuple (cantidad, precio_nominal). Si no encuentra en Posicion, 
+            busca en PreciosInicialesEspecies y retorna (0, precio_nominal_fallback).
+            Para fallback USD: ya retorna el precio en USD (dividido por cotización inicio período).
             
         NOTA: Ahora devuelve Precio Nominal (Col V=22) que ya está dividido por 100
         para ON, Títulos Públicos y Letras del Tesoro.
@@ -928,18 +946,34 @@ class GalloVisualMerger:
         """
         pos_sheet = 'Posicion Inicial Gallo' if is_gallo else 'Posicion Final Gallo'
         
-        if pos_sheet not in wb.sheetnames:
-            return (0.0, 0.0)
+        if pos_sheet in wb.sheetnames:
+            pos_ws = wb[pos_sheet]
+            for r in range(2, pos_ws.max_row + 1):
+                pos_cod = pos_ws.cell(r, 4).value  # Col D = Codigo especie
+                if pos_cod and self._clean_codigo(str(pos_cod)) == cod_instrum:
+                    cantidad = self._to_float(pos_ws.cell(r, 9).value)   # Col I = cantidad
+                    precio_nominal = self._to_float(pos_ws.cell(r, 22).value)  # Col V = Precio Nominal
+                    return (cantidad, precio_nominal)
         
-        pos_ws = wb[pos_sheet]
-        for r in range(2, pos_ws.max_row + 1):
-            pos_cod = pos_ws.cell(r, 4).value  # Col D = Codigo especie
-            if pos_cod and self._clean_codigo(str(pos_cod)) == cod_instrum:
-                cantidad = self._to_float(pos_ws.cell(r, 9).value)   # Col I = cantidad
-                precio_nominal = self._to_float(pos_ws.cell(r, 22).value)  # Col V = Precio Nominal
-                return (cantidad, precio_nominal)
+        # No encontrado en Posicion - buscar en PreciosInicialesEspecies como fallback
+        # Esto cubre el caso de instrumentos que se venden sin haber estado en posicion
+        precio_data = self._precios_iniciales_by_codigo.get(cod_instrum, {})
+        if precio_data.get('precio'):
+            precio_bruto = precio_data['precio']
+            # Obtener tipo de instrumento para saber si dividir por 100
+            tipo_instrumento = self._vlookup_especies_visual(cod_instrum, 16)
+            if self._es_tipo_precio_cada_100(tipo_instrumento):
+                precio_nominal = precio_bruto / 100
+            else:
+                precio_nominal = precio_bruto
+            # Para USD: convertir a USD usando cotización del inicio del período
+            # (PreciosInicialesEspecies tiene precios al 31/12/2024)
+            if for_usd:
+                precio_nominal = precio_nominal / self.COTIZACION_INICIO_PERIODO
+            # Retornar cantidad=0 (no hay stock previo) pero con precio de referencia
+            return (0.0, precio_nominal)
         
-        # No encontrado - retornar 0, 0 (válido para instrumentos nuevos)
+        # No encontrado en ningún lado - retornar 0, 0
         return (0.0, 0.0)
     
     def _create_posicion_inicial(self, wb: Workbook):
@@ -2029,14 +2063,22 @@ class GalloVisualMerger:
             # Col Q: Cantidad Stock Inicial
             if row_out == 2:
                 ws.cell(row_out, 17, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                # Col R: Precio Stock Inicial - Ahora usa col V (19 desde D) = Precio Nominal
-                ws.cell(row_out, 18, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0))')
-                explicacion_q = f"VLOOKUP(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col V=Precio Nominal)"
+                # Col R: Precio Stock Inicial - Usa col V (19 desde D) = Precio Nominal
+                # Con fallback a PreciosInicialesEspecies Col I (Precio Nominal en pesos)
+                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
+                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
+                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:I,9,FALSE),0)'
+                ws.cell(row_out, 18, f'=LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio))')
+                explicacion_q = f"VLOOKUP(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col V=Precio Nominal, fallback PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
                 ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
-                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)))')
-                explicacion_q = f"SI D{row_out}=D{prev}: V{prev}, SINO: VLOOKUP(D{row_out}→Posicion col V=Precio Nominal)"
+                # Col R: Con fallback
+                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
+                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
+                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:I,9,FALSE),0)'
+                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio)))')
+                explicacion_q = f"SI D{row_out}=D{prev}: W{prev}, SINO: VLOOKUP(D{row_out}→Posicion col V=Precio Nominal, fallback PreciosInicialesEspecies)"
             
             # Col S: Costo por venta = Cantidad * Precio Stock (si venta, cantidad < 0)
             ws.cell(row_out, 19, f'=IF(I{row_out}<0,I{row_out}*R{row_out},0)')
@@ -2211,17 +2253,27 @@ class GalloVisualMerger:
             # COLUMNAS T-Z: Fórmulas de Running Stock
             cod = trans['cod_instrum']
             
-            # Col T: Cantidad Stock Inicial
+            # Col T: Cantidad Stock Inicial - busca en Posicion, si no está devuelve 0 (no fallback necesario)
             if row_out == 2:
                 ws.cell(row_out, 20, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                # Col U: Precio Stock USD = Precio Nominal Posición / Valor USD Dia (usa col V=19 desde D)
-                ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0))/P{row_out})')
-                explicacion_t = f"T=VLOOKUP(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col V=Precio Nominal)"
+                # Col U: Precio Stock USD
+                # Primero intenta VLOOKUP a Posicion / cotización día
+                # Si es 0, usa fallback a PreciosInicialesEspecies Col J (Precio Nominal USD ya calculado)
+                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
+                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
+                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:J,10,FALSE),0)'
+                # Fórmula: IF(P=0, 0, LET(pos, VLOOKUP_posicion, IF(pos=0, fallback, pos/P)))
+                ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio/P{row_out})))')
+                explicacion_t = f"T=VLOOKUP(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col V=Precio Nominal, fallback PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
                 ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
-                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0))/P{row_out}))')
-                explicacion_t = f"SI D{row_out}=D{prev}: Y{prev}, SINO: VLOOKUP(col V=Precio Nominal)"
+                # Col U: Con fallback
+                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
+                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
+                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:J,10,FALSE),0)'
+                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio/P{row_out}))))')
+                explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: VLOOKUP(col V=Precio Nominal, fallback PreciosInicialesEspecies)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
             ws.cell(row_out, 22, f'=IF(I{row_out}<0,I{row_out}*U{row_out},0)')
@@ -2792,6 +2844,53 @@ class GalloVisualMerger:
             for row in ws_src.iter_rows():
                 for cell in row:
                     ws_dst.cell(row=cell.row, column=cell.column, value=cell.value)
+        
+        # Enriquecer PreciosInicialesEspecies con columnas calculadas para fallback
+        self._enrich_precios_iniciales(wb)
+    
+    def _enrich_precios_iniciales(self, wb: Workbook):
+        """
+        Agrega columnas calculadas a PreciosInicialesEspecies para usar en VLOOKUPs de fallback.
+        
+        Columnas existentes: A=Código, B=Nombre, C=Ticker/ORDEN, D-F=otros, G=Precio
+        
+        Columnas nuevas:
+        - H: Tipo Instrumento (VLOOKUP a EspeciesVisual col R)
+        - I: Precio Nominal = IF(tipo requiere /100, G/100, G)
+        - J: Precio Nominal USD = I / Cotización inicio período
+        """
+        if 'PreciosInicialesEspecies' not in wb.sheetnames:
+            return
+        
+        ws = wb['PreciosInicialesEspecies']
+        
+        # Agregar headers
+        ws.cell(1, 8, 'Tipo Instrumento')
+        ws.cell(1, 9, 'Precio Nominal')
+        ws.cell(1, 10, 'Precio Nominal USD')
+        
+        # Cotización inicio período
+        cotiz = self.COTIZACION_INICIO_PERIODO
+        
+        # Lista de tipos que requieren división por 100 (para la fórmula)
+        # Usamos matching parcial como en _es_tipo_precio_cada_100
+        tipos_100 = "obligaciones negociables|obligacion negociable|títulos públicos|titulos publicos|titulo publico|letras del tesoro|letra del tesoro|letras"
+        
+        for row in range(2, ws.max_row + 1):
+            codigo = ws.cell(row, 1).value
+            precio = ws.cell(row, 7).value
+            
+            if codigo:
+                # Col H: Tipo Instrumento - VLOOKUP a EspeciesVisual
+                # EspeciesVisual: Col C=Código, Col R=Tipo Especie (offset 16)
+                ws.cell(row, 8, f'=IFERROR(VLOOKUP(A{row},EspeciesVisual!C:R,16,FALSE),"")')
+                
+                # Col I: Precio Nominal - dividir por 100 si tipo lo requiere
+                # Usamos SEARCH para detectar si H contiene alguno de los tipos
+                ws.cell(row, 9, f'=IF(OR(ISNUMBER(SEARCH("obligacion",LOWER(H{row}))),ISNUMBER(SEARCH("titulo",LOWER(H{row}))),ISNUMBER(SEARCH("letra",LOWER(H{row})))),G{row}/100,G{row})')
+                
+                # Col J: Precio Nominal USD = I / cotización
+                ws.cell(row, 10, f'=I{row}/{cotiz}')
 
 
 def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = None, 
