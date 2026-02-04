@@ -383,9 +383,17 @@ class ExcelToPdfExporter:
     def _get_col_index(self, headers: List[str], col_name: str, alt_names: List[str] = None) -> int:
         """
         Obtiene el índice de una columna por nombre.
-        Busca el nombre exacto o alternativos.
+        Busca primero coincidencia exacta, luego substring.
         """
         all_names = [col_name] + (alt_names or [])
+        
+        # Primera pasada: buscar coincidencia exacta (case-insensitive)
+        for name in all_names:
+            for i, h in enumerate(headers):
+                if h and h.lower().strip() == name.lower().strip():
+                    return i
+        
+        # Segunda pasada: buscar substring (case-insensitive)
         for name in all_names:
             for i, h in enumerate(headers):
                 if h and name.lower() in h.lower():

@@ -41,14 +41,17 @@ class GalloVisualMerger:
                                   'Cauciones', 'Titulos Publicos', 'Cedears']
     
     # Tipos de instrumento que expresan precio cada 100 unidades (dividir por 100 para nominal)
-    TIPOS_PRECIO_CADA_100 = ['obligaciones negociables', 'títulos públicos', 'titulos publicos',
-                             'letras del tesoro', 'letras', 'on', 'titulo publico']
+    # NOTA: NO incluir 'on' porque matchea con 'Acciones' usando substring matching
+    TIPOS_PRECIO_CADA_100 = ['obligaciones negociables', 'obligacion negociable', 
+                             'títulos públicos', 'titulos publicos', 'titulo publico',
+                             'letras del tesoro', 'letra del tesoro', 'letras']
     
     def _es_tipo_precio_cada_100(self, tipo_instrumento: str) -> bool:
         """Verifica si el tipo de instrumento expresa precio cada 100 unidades."""
         if not tipo_instrumento:
             return False
         tipo_lower = tipo_instrumento.lower().strip()
+        # Usar matching parcial para los términos de la lista
         return any(t in tipo_lower for t in self.TIPOS_PRECIO_CADA_100)
     
     def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None):
@@ -470,13 +473,14 @@ class GalloVisualMerger:
         """
         Materializa fórmulas en la hoja Boletos.
         
-        Agrega columna 'Precio Nominal' (Col S, 19) para tipos que expresan precio cada 100.
+        Agrega columna 'Precio Nominal' (Col 20, después de las 19 originales) para tipos que expresan precio cada 100.
         El Bruto y Neto se calculan usando el Precio Nominal.
         """
-        # Agregar header para Precio Nominal en Col S (19) si no existe
-        if ws.cell(1, 19).value != 'Precio Nominal':
-            ws.cell(1, 19, 'Precio Nominal')
-            ws.cell(1, 19).font = Font(bold=True)
+        # Agregar header para Precio Nominal en Col 20 (después de las 19 originales)
+        col_precio_nominal = 20
+        if ws.cell(1, col_precio_nominal).value != 'Precio Nominal':
+            ws.cell(1, col_precio_nominal, 'Precio Nominal')
+            ws.cell(1, col_precio_nominal).font = Font(bold=True)
         
         for row in range(2, ws.max_row + 1):
             # Col G = Cod.Instrum (valor directo)
@@ -521,8 +525,8 @@ class GalloVisualMerger:
             else:
                 precio_nominal = precio_num
             
-            # Guardar Precio Nominal en Col S (19)
-            ws.cell(row, 19, precio_nominal)
+            # Guardar Precio Nominal en Col 20 (nueva columna después de las 19 originales)
+            ws.cell(row, col_precio_nominal, precio_nominal)
             
             # Col M (13): Bruto = Cantidad * Precio Nominal
             cantidad = ws.cell(row, 10).value  # Col J
@@ -625,16 +629,16 @@ class GalloVisualMerger:
         IMPORTANTE: Para ON, Títulos Públicos, Letras del Tesoro, el precio viene
         expresado cada 100 unidades. Se crea columna "Precio Nominal" = Precio/100.
         
-        ARS: Columnas Q-W (17-23) para running stock, X (24) para Precio Nominal
-        USD: Columnas T-Z (20-26) para running stock, AA (27) para Precio Nominal
+        ARS: 26 columnas originales, Precio Nominal en col 27
+        USD: 28 columnas originales, Precio Nominal en col 29
         """
         wb = ws.parent
         
-        # Agregar header para Precio Nominal
+        # Agregar header para Precio Nominal al final
         if moneda_tipo == "ARS":
-            col_precio_nominal = 24  # X
+            col_precio_nominal = 27  # Después de las 26 columnas originales
         else:
-            col_precio_nominal = 27  # AA
+            col_precio_nominal = 29  # Después de las 28 columnas originales
         
         if ws.cell(1, col_precio_nominal).value != 'Precio Nominal':
             ws.cell(1, col_precio_nominal, 'Precio Nominal')
