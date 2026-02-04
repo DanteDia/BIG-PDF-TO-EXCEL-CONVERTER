@@ -1136,12 +1136,12 @@ class GalloVisualMerger:
         """Crea hoja Boletos con transacciones de Gallo y Visual, ordenadas por Cod.Instrum y fecha."""
         ws = wb.create_sheet("Boletos")
         
-        # Headers (19 columnas)
+        # Headers (20 columnas - agregamos Precio Nominal)
         headers = ['Tipo de Instrumento', 'Concertación', 'Liquidación', 'Nro. Boleto',
                    'Moneda', 'Tipo Operación', 'Cod.Instrum', 'Instrumento Crudo',
                    'InstrumentoConMoneda', 'Cantidad', 'Precio', 'Tipo Cambio',
                    'Bruto', 'Interés', 'Gastos', 'Neto Calculado', 'Origen', 
-                   'moneda emision', 'Auditoría']
+                   'moneda emision', 'Auditoría', 'Precio Nominal']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1329,8 +1329,13 @@ class GalloVisualMerger:
             # Usa VLOOKUP simple por fecha (asumiendo que Cotización tiene fecha en col A, valor en col B)
             tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
             
-            bruto = f'=J{row_out}*K{row_out}'
-            neto = f'=IF(J{row_out}>0,J{row_out}*K{row_out}+O{row_out},J{row_out}*K{row_out}-O{row_out})'
+            # Precio Nominal: dividir por 100 si es ON, Títulos Públicos o Letras del Tesoro
+            # Busca en el Tipo de Instrumento (col A) si contiene Obligacion, Titulo o Letra
+            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",A{row_out})),ISNUMBER(SEARCH("Titulo",A{row_out})),ISNUMBER(SEARCH("Letra",A{row_out}))),K{row_out}/100,K{row_out})'
+            
+            # Bruto y Neto usan Precio Nominal (col T) en lugar de Precio (col K)
+            bruto = f'=J{row_out}*T{row_out}'
+            neto = f'=IF(J{row_out}>0,J{row_out}*T{row_out}+O{row_out},J{row_out}*T{row_out}-O{row_out})'
             moneda_emision = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE),"")'
             
             ws.cell(row_out, 1, tipo_instrumento)
@@ -1352,6 +1357,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 17, trans['origen'])
             ws.cell(row_out, 18, moneda_emision)
             ws.cell(row_out, 19, trans['auditoria'])
+            ws.cell(row_out, 20, precio_nominal)  # Precio Nominal
     
     def _create_cauciones_tomadoras(self, wb: Workbook):
         """
@@ -1823,14 +1829,14 @@ class GalloVisualMerger:
         """Crea hoja Resultado Ventas ARS con transacciones de Boletos filtradas por Pesos."""
         ws = wb.create_sheet("Resultado Ventas ARS")
         
-        # Headers (26 columnas - agregamos columna explicativa detallada)
+        # Headers (27 columnas - agregamos Precio Nominal)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
                    'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación',
                    'Cantidad', 'Precio', 'Bruto', 'Interés', 'Tipo de Cambio',
                    'Gastos', 'IVA', 'Resultado', 'Cantidad Stock Inicial',
                    'Precio Stock Inicial', 'Costo por venta(gallo)', 'Neto Calculado(visual)',
                    'Resultado Calculado(final)', 'Cantidad de Stock Final', 
-                   'Precio Stock Final', 'Explicación Q', 'Explicación R-U', 'chequeado']
+                   'Precio Stock Final', 'Explicación Q', 'Explicación R-U', 'chequeado', 'Precio Nominal']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1993,12 +1999,15 @@ class GalloVisualMerger:
             
             # Col Z: Chequeado
             ws.cell(row_out, 26, f"Origen: {trans['origen']} | Cod: {cod}")
+            
+            # Col AA (27): Precio Nominal = Precio/100 si es ON, Títulos Públicos o Letras
+            ws.cell(row_out, 27, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),J{row_out}/100,J{row_out})')
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
         """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
         ws = wb.create_sheet("Resultado Ventas USD")
         
-        # Headers (28 columnas - agregamos explicación detallada)
+        # Headers (29 columnas - agregamos Precio Nominal)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
                    'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación',
                    'Cantidad', 'Precio', 'Precio Standarizado', 'Precio Standarizado en USD',
@@ -2006,7 +2015,7 @@ class GalloVisualMerger:
                    'Gastos', 'IVA', 'Resultado', 'Cantidad Stock Inicial',
                    'Precio Stock USD', 'Costo por venta(gallo)', 'Neto Calculado(visual)',
                    'Resultado Calculado(final)', 'Cantidad de Stock Final',
-                   'Precio Stock Final', 'Explicación T-Z', 'Auditoría']
+                   'Precio Stock Final', 'Explicación T-Z', 'Auditoría', 'Precio Nominal']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -2171,6 +2180,9 @@ class GalloVisualMerger:
             
             # Col AB: Auditoría
             ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K/P(ValorUSDDia)")
+            
+            # Col AC (29): Precio Nominal = PrecioStd/100 si es ON, Títulos Públicos o Letras
+            ws.cell(row_out, 29, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),K{row_out}/100,K{row_out})')
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados."""
