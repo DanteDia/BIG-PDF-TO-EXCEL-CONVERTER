@@ -453,6 +453,12 @@ class GalloVisualMerger:
         Convierte todas las fórmulas de Excel a valores calculados en Python.
         Esto es necesario porque openpyxl no evalúa fórmulas y el PDF mostraría celdas vacías.
         """
+        # 0. Materializar fórmulas en Posicion Inicial y Final (PRIMERO, porque Resultado Ventas las usa)
+        if 'Posicion Inicial Gallo' in wb.sheetnames:
+            self._materialize_posicion(wb['Posicion Inicial Gallo'])
+        if 'Posicion Final Gallo' in wb.sheetnames:
+            self._materialize_posicion(wb['Posicion Final Gallo'])
+        
         # 1. Materializar fórmulas en Boletos
         if 'Boletos' in wb.sheetnames:
             self._materialize_boletos(wb['Boletos'])
@@ -468,6 +474,34 @@ class GalloVisualMerger:
         # 4. Materializar fórmulas en Resultado Ventas USD
         if 'Resultado Ventas USD' in wb.sheetnames:
             self._materialize_resultado_ventas(wb['Resultado Ventas USD'], "USD")
+    
+    def _materialize_posicion(self, ws):
+        """
+        Materializa fórmulas en hojas de Posición (Inicial y Final).
+        
+        Col U (21) = Tipo Instrumento = VLOOKUP a EspeciesVisual
+        Col V (22) = Precio Nominal = IF(es ON/TP/Letras, P/100, P)
+        """
+        for row in range(2, ws.max_row + 1):
+            cod_especie = ws.cell(row, 4).value  # Col D = Codigo especie
+            precio_a_utilizar = self._to_float(ws.cell(row, 16).value)  # Col P = Precio a Utilizar
+            
+            # Obtener tipo de instrumento desde cache de EspeciesVisual
+            cod_clean = self._clean_codigo(str(cod_especie)) if cod_especie else None
+            especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
+            tipo_instrumento = especie_data.get('tipo_especie', '')
+            
+            # Guardar Tipo Instrumento en Col U (21)
+            ws.cell(row, 21, tipo_instrumento)
+            
+            # Calcular Precio Nominal usando el tipo de instrumento de EspeciesVisual
+            if self._es_tipo_precio_cada_100(tipo_instrumento):
+                precio_nominal = precio_a_utilizar / 100
+            else:
+                precio_nominal = precio_a_utilizar
+            
+            # Guardar Precio Nominal en Col V (22)
+            ws.cell(row, 22, precio_nominal)
     
     def _materialize_boletos(self, ws):
         """
@@ -752,13 +786,9 @@ class GalloVisualMerger:
             # Si es nuevo instrumento (D{row} != D{row-1}), buscar posición inicial
             if cod_instrum != prev_cod_instrum:
                 # Buscar en hoja de posición correspondiente
-                stock_cantidad, stock_precio_raw = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
-                
-                # Convertir precio de posición a nominal si corresponde
-                if es_precio_cada_100:
-                    stock_precio = stock_precio_raw / 100
-                else:
-                    stock_precio = stock_precio_raw
+                # NOTA: _get_posicion_inicial ahora devuelve Precio Nominal (col U=21)
+                # que ya está dividido por 100 para ON/TP/Letras
+                stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
                 
                 # Para USD: convertir precio de posición a USD inmediatamente
                 if moneda_tipo == "USD" and valor_usd_dia > 0:
@@ -865,7 +895,7 @@ class GalloVisualMerger:
     
     def _get_posicion_inicial(self, wb: Workbook, cod_instrum: str, is_gallo: bool) -> Tuple[float, float]:
         """
-        Obtiene (cantidad, precio) de la hoja de posición correspondiente.
+        Obtiene (cantidad, precio_nominal) de la hoja de posición correspondiente.
         
         Args:
             wb: Workbook consolidado
@@ -873,7 +903,11 @@ class GalloVisualMerger:
             is_gallo: True si origen es Gallo, False si es Visual
             
         Returns:
-            Tuple (cantidad, precio). Si no encuentra, retorna (0, 0).
+            Tuple (cantidad, precio_nominal). Si no encuentra, retorna (0, 0).
+            
+        NOTA: Ahora devuelve Precio Nominal (Col V=22) que ya está dividido por 100
+        para ON, Títulos Públicos y Letras del Tesoro.
+        Col U=21 es Tipo Instrumento (VLOOKUP a EspeciesVisual).
         """
         pos_sheet = 'Posicion Inicial Gallo' if is_gallo else 'Posicion Final Gallo'
         
@@ -884,9 +918,9 @@ class GalloVisualMerger:
         for r in range(2, pos_ws.max_row + 1):
             pos_cod = pos_ws.cell(r, 4).value  # Col D = Codigo especie
             if pos_cod and self._clean_codigo(str(pos_cod)) == cod_instrum:
-                cantidad = self._to_float(pos_ws.cell(r, 9).value)  # Col I = cantidad
-                precio = self._to_float(pos_ws.cell(r, 16).value)   # Col P = Precio a Utilizar
-                return (cantidad, precio)
+                cantidad = self._to_float(pos_ws.cell(r, 9).value)   # Col I = cantidad
+                precio_nominal = self._to_float(pos_ws.cell(r, 22).value)  # Col V = Precio Nominal
+                return (cantidad, precio_nominal)
         
         # No encontrado - retornar 0, 0 (válido para instrumentos nuevos)
         return (0.0, 0.0)
@@ -895,13 +929,13 @@ class GalloVisualMerger:
         """Crea hoja Posicion Inicial Gallo con las mismas columnas que Posicion Final."""
         ws = wb.create_sheet("Posicion Inicial Gallo")
         
-        # Headers (20 columnas) - misma estructura que Posicion Final pero con nombres "Inicial"
+        # Headers (22 columnas) - misma estructura que Posicion Final pero con nombres "Inicial"
         headers = ['tipo_especie', 'Ticker', 'especie', 'Codigo especie',
                    'Codigo Especie Origen', 'comentario especies', 'detalle', 'custodia', 'cantidad',
                    'precio Tenencia Inicial Pesos', 'precio Tenencia Inicial USD', 'Precio de PreciosIniciales',
                    'precio costo(en proceso)', 'Origen precio costo', 'comentarios precio costo',
                    'Precio a Utilizar', 'importe_pesos', 'porc_cartera_pesos', 'importe_dolares', 
-                   'porc_cartera_dolares']
+                   'porc_cartera_dolares', 'Tipo Instrumento', 'Precio Nominal']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1013,6 +1047,12 @@ class GalloVisualMerger:
             ws.cell(row_out, 18, porc_pesos)
             ws.cell(row_out, 19, importe_usd)
             ws.cell(row_out, 20, porc_usd)
+            # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
+            tipo_instrumento = f'=IFERROR(VLOOKUP(D{row_out},EspeciesVisual!C:R,16,FALSE),"")'
+            ws.cell(row_out, 21, tipo_instrumento)
+            # Col V (22): Precio Nominal = Precio/100 si Tipo Instrumento contiene Obligacion, Titulo/Título o Letra
+            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",U{row_out})),ISNUMBER(SEARCH("Titulo",U{row_out})),ISNUMBER(SEARCH("Título",U{row_out})),ISNUMBER(SEARCH("Letra",U{row_out}))),P{row_out}/100,P{row_out})'
+            ws.cell(row_out, 22, precio_nominal)
             
             row_out += 1
     
@@ -1020,13 +1060,13 @@ class GalloVisualMerger:
         """Crea hoja Posicion Final Gallo con columnas adicionales."""
         ws = wb.create_sheet("Posicion Final Gallo")
         
-        # Headers (20 columnas)
+        # Headers (22 columnas)
         headers = ['tipo_especie', 'Ticker', 'especie', 'Codigo especie',
                    'Codigo Especie Origen', 'comentario especies', 'detalle', 'custodia', 'cantidad',
                    'precio Tenencia Final Pesos', 'precio Tenencia Final USD', 'Precio Tenencia Inicial',
                    'precio costo(en proceso)', 'Origen precio costo', 'comentarios precio costo',
                    'Precio a Utilizar', 'importe_pesos', 'porc_cartera_pesos', 'importe_dolares', 
-                   'porc_cartera_dolares']
+                   'porc_cartera_dolares', 'Tipo Instrumento', 'Precio Nominal']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1129,9 +1169,15 @@ class GalloVisualMerger:
             ws.cell(row_out, 18, porc_pesos)
             ws.cell(row_out, 19, importe_usd)
             ws.cell(row_out, 20, porc_usd)
+            # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
+            tipo_instrumento = f'=IFERROR(VLOOKUP(D{row_out},EspeciesVisual!C:R,16,FALSE),"")'
+            ws.cell(row_out, 21, tipo_instrumento)
+            # Col V (22): Precio Nominal = Precio/100 si Tipo Instrumento contiene Obligacion, Titulo/Título o Letra
+            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",U{row_out})),ISNUMBER(SEARCH("Titulo",U{row_out})),ISNUMBER(SEARCH("Título",U{row_out})),ISNUMBER(SEARCH("Letra",U{row_out}))),P{row_out}/100,P{row_out})'
+            ws.cell(row_out, 22, precio_nominal)
             
             row_out += 1
-    
+
     def _create_boletos(self, wb: Workbook):
         """Crea hoja Boletos con transacciones de Gallo y Visual, ordenadas por Cod.Instrum y fecha."""
         ws = wb.create_sheet("Boletos")
@@ -1330,8 +1376,8 @@ class GalloVisualMerger:
             tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
             
             # Precio Nominal: dividir por 100 si es ON, Títulos Públicos o Letras del Tesoro
-            # Busca en el Tipo de Instrumento (col A) si contiene Obligacion, Titulo o Letra
-            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",A{row_out})),ISNUMBER(SEARCH("Titulo",A{row_out})),ISNUMBER(SEARCH("Letra",A{row_out}))),K{row_out}/100,K{row_out})'
+            # Busca en el Tipo de Instrumento (col A) si contiene Obligacion, Titulo/Título o Letra
+            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",A{row_out})),ISNUMBER(SEARCH("Titulo",A{row_out})),ISNUMBER(SEARCH("Título",A{row_out})),ISNUMBER(SEARCH("Letra",A{row_out}))),K{row_out}/100,K{row_out})'
             
             # Bruto y Neto usan Precio Nominal (col T) en lugar de Precio (col K)
             bruto = f'=J{row_out}*T{row_out}'
@@ -1926,7 +1972,8 @@ class GalloVisualMerger:
             ws.cell(row_out, 8, trans['tipo_operacion'])
             ws.cell(row_out, 9, trans['cantidad'])
             ws.cell(row_out, 10, trans['precio'])
-            ws.cell(row_out, 11, trans['bruto'])  # Valor calculado, no fórmula
+            # Col K: Bruto = Cantidad * Precio Nominal (col AA) - FÓRMULA
+            ws.cell(row_out, 11, f'=I{row_out}*AA{row_out}')
             ws.cell(row_out, 12, trans['interes'])
             ws.cell(row_out, 13, trans['tipo_cambio'])  # Valor 1, no fórmula
             ws.cell(row_out, 14, trans['gastos'])
@@ -1964,15 +2011,15 @@ class GalloVisualMerger:
             
             # Col Q: Cantidad Stock Inicial
             if row_out == 2:
-                ws.cell(row_out, 17, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                # Col R: Precio Stock Inicial
-                ws.cell(row_out, 18, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))')
-                explicacion_q = f"VLOOKUP(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col I)"
+                ws.cell(row_out, 17, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                # Col R: Precio Stock Inicial - Ahora usa col V (19 desde D) = Precio Nominal
+                ws.cell(row_out, 18, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0))')
+                explicacion_q = f"VLOOKUP(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col V=Precio Nominal)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
-                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0)))')
-                explicacion_q = f"SI D{row_out}=D{prev}: V{prev}, SINO: VLOOKUP(D{row_out}→Posicion col I)"
+                ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
+                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)))')
+                explicacion_q = f"SI D{row_out}=D{prev}: V{prev}, SINO: VLOOKUP(D{row_out}→Posicion col V=Precio Nominal)"
             
             # Col S: Costo por venta = Cantidad * Precio Stock (si venta, cantidad < 0)
             ws.cell(row_out, 19, f'=IF(I{row_out}<0,I{row_out}*R{row_out},0)')
@@ -2001,7 +2048,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 26, f"Origen: {trans['origen']} | Cod: {cod}")
             
             # Col AA (27): Precio Nominal = Precio/100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 27, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),J{row_out}/100,J{row_out})')
+            ws.cell(row_out, 27, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Título",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),J{row_out}/100,J{row_out})')
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
         """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
@@ -2118,8 +2165,8 @@ class GalloVisualMerger:
             # O = 1 si moneda incluye "dolar", sino 1/P
             ws.cell(row_out, 12, f'=K{row_out}*O{row_out}')
             
-            # Col M: Bruto en USD = Cantidad * Precio USD
-            ws.cell(row_out, 13, f'=I{row_out}*L{row_out}')
+            # Col M: Bruto en USD = Cantidad * Precio Nominal (col AC=29)
+            ws.cell(row_out, 13, f'=I{row_out}*AC{row_out}')
             
             # Col N: Interés
             ws.cell(row_out, 14, trans['interes'])
@@ -2148,15 +2195,15 @@ class GalloVisualMerger:
             
             # Col T: Cantidad Stock Inicial
             if row_out == 2:
-                ws.cell(row_out, 20, f'=IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
-                # Col U: Precio Stock USD = Precio Posición / Valor USD Dia
-                ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))/P{row_out})')
-                explicacion_t = f"T=VLOOKUP(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col I)"
+                ws.cell(row_out, 20, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                # Col U: Precio Stock USD = Precio Nominal Posición / Valor USD Dia (usa col V=19 desde D)
+                ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0))/P{row_out})')
+                explicacion_t = f"T=VLOOKUP(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col V=Precio Nominal)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
-                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="Gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:P,13,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:P,13,FALSE),0))/P{row_out}))')
-                explicacion_t = f"SI D{row_out}=D{prev}: Y{prev}, SINO: VLOOKUP"
+                ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
+                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0))/P{row_out}))')
+                explicacion_t = f"SI D{row_out}=D{prev}: Y{prev}, SINO: VLOOKUP(col V=Precio Nominal)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
             ws.cell(row_out, 22, f'=IF(I{row_out}<0,I{row_out}*U{row_out},0)')
@@ -2179,10 +2226,10 @@ class GalloVisualMerger:
             ws.cell(row_out, 27, explicacion_full)
             
             # Col AB: Auditoría
-            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K/P(ValorUSDDia)")
+            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K*O")
             
-            # Col AC (29): Precio Nominal = PrecioStd/100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 29, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),K{row_out}/100,K{row_out})')
+            # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
+            ws.cell(row_out, 29, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Título",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),L{row_out}/100,L{row_out})')
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados."""
