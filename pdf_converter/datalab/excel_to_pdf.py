@@ -824,11 +824,19 @@ class ExcelToPdfExporter:
         rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
         
-        cau_int_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'interes')
-        cau_cf_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo')
+        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
+        cau_int_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'interes') +
+                      self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'interes'))
+        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
+        cau_cf_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo') +
+                     self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo'))
         
-        cau_int_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'interes')
-        cau_cf_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
+        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
+        cau_int_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'interes') +
+                      self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'interes'))
+        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
+        cau_cf_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo') +
+                     self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo'))
         
         total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_int_ars + cau_cf_ars
         total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_int_usd + cau_cf_usd
@@ -954,15 +962,15 @@ class ExcelToPdfExporter:
         return total
     
     def _calculate_cauciones(self, sheet_name: str, moneda: str, campo: str) -> float:
-        """Calcula el total de cauciones (interés o costo financiero)."""
+        """Calcula el total de cauciones (interés devengado o costo financiero)."""
         if sheet_name not in self.wb.sheetnames:
             return 0
         
         ws = self.wb[sheet_name]
         total = 0
         
-        # Columnas: 10=Interés Bruto, 14=Costo Financiero, 15=Moneda
-        col = 10 if campo == 'interes' else 14
+        # Columnas: 11=Interés Devengado (K), 14=Costo Financiero (N), 15=Moneda
+        col = 11 if campo == 'interes' else 14
         
         for row in range(2, ws.max_row + 1):
             moneda_val = str(ws.cell(row, 15).value or '').upper()

@@ -2643,15 +2643,23 @@ class GalloVisualMerger:
         ventas_ars = self._calculate_ventas_real(wb, 'Resultado Ventas ARS')
         rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas', 'AMORTIZACION'])
         dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
-        cauciones_int_ars = self._sum_column(wb, 'Cauciones Tomadoras', 10, moneda_filter='Pesos')  # Interés Bruto
-        cauciones_cf_ars = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos')  # Costo Financiero
+        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
+        cauciones_int_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Pesos') + 
+                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Pesos'))
+        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
+        cauciones_cf_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos') + 
+                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Pesos'))
         
         # Calcular totales USD
         ventas_usd = self._calculate_ventas_real(wb, 'Resultado Ventas USD')
         rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
-        cauciones_int_usd = self._sum_column(wb, 'Cauciones Tomadoras', 10, moneda_filter='Dolar')
-        cauciones_cf_usd = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar')
+        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
+        cauciones_int_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Dolar') +
+                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Dolar'))
+        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
+        cauciones_cf_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar') +
+                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Dolar'))
         
         # Fila ARS
         ws.cell(2, 1, "ARS")
