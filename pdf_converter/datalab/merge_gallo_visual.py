@@ -2051,7 +2051,8 @@ class GalloVisualMerger:
             ws.cell(row_out, 22, f'=I{row_out}+Q{row_out}')
             
             # Col W: Precio Stock Final (promedio ponderado si compra, mantiene si venta)
-            ws.cell(row_out, 23, f'=IF(V{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+Q{row_out})=0,0,(I{row_out}*J{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out})),R{row_out}))')
+            # IMPORTANTE: Usar AA (Precio Nominal) en vez de J (Precio) para ON/TP/Letras
+            ws.cell(row_out, 23, f'=IF(V{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+Q{row_out})=0,0,(I{row_out}*AA{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out})),R{row_out}))')
             
             # Col X: Explicación Q (específica para esta fila)
             ws.cell(row_out, 24, explicacion_q)
@@ -2235,7 +2236,8 @@ class GalloVisualMerger:
             ws.cell(row_out, 25, f'=I{row_out}+T{row_out}')
             
             # Col Z: Precio Stock Final (promedio ponderado)
-            ws.cell(row_out, 26, f'=IF(Y{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+T{row_out})=0,0,(I{row_out}*L{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
+            # IMPORTANTE: Usar AC (Precio Nominal) en vez de L (Precio Std USD) para ON/TP/Letras
+            ws.cell(row_out, 26, f'=IF(Y{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+T{row_out})=0,0,(I{row_out}*AC{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
             
             # Col AA: Explicación T-Z
             cantidad_val = trans['cantidad'] or 0
