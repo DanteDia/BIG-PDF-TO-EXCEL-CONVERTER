@@ -710,6 +710,14 @@ class GalloVisualMerger:
                 precio_nominal = precio_original / 100 if es_precio_cada_100 else precio_original
                 ws.cell(row, col_precio_nominal, precio_nominal)
                 
+                # Dividir gastos e intereses por 100 para ON/TP/Letras
+                if es_precio_cada_100:
+                    gastos = gastos / 100
+                    interes = interes / 100
+                    # Actualizar celdas con valores divididos
+                    ws.cell(row, 12, interes)  # Col L = Interés
+                    ws.cell(row, 14, gastos)   # Col N = Gastos
+                
                 # Recalcular Bruto con precio nominal
                 bruto = cantidad * precio_nominal
                 ws.cell(row, 11, bruto)  # Col K = Bruto (sobrescribir)
@@ -755,23 +763,32 @@ class GalloVisualMerger:
                     if tipo_cambio == 0:
                         tipo_cambio = 1.0
                 
-                # Calcular Precio Nominal del precio estandarizado
-                # El precio_std ya tiene x100 de Visual, pero ON/TP/Letras vienen x100 adicional
+                # Calcular Precio Nominal USD:
+                # 1. Primero convertir precio_std_original a USD: precio_std_original * tipo_cambio
+                # 2. Si es ON/TP/Letras, dividir por 100
+                precio_std_usd_raw = precio_std_original * tipo_cambio
                 if es_precio_cada_100:
-                    precio_std = precio_std_original / 100
+                    precio_std_usd = precio_std_usd_raw / 100
                 else:
-                    precio_std = precio_std_original
+                    precio_std_usd = precio_std_usd_raw
                 
-                # Guardar Precio Nominal
-                ws.cell(row, col_precio_nominal, precio_std)
+                # Materializar L (Precio Std USD) - Este es el precio por 100VN en USD
+                ws.cell(row, 12, precio_std_usd_raw)
                 
-                # Materializar L (Precio Std USD) = Precio Nominal * Tipo Cambio
-                precio_std_usd = precio_std * tipo_cambio
-                ws.cell(row, 12, precio_std_usd)
+                # Guardar Precio Nominal (en USD, dividido por 100 si corresponde)
+                ws.cell(row, col_precio_nominal, precio_std_usd)
                 
-                # Materializar M (Bruto USD) = I * L
+                # Materializar M (Bruto USD) = I * Precio Nominal (ya en USD y ajustado)
                 bruto_usd = cantidad * precio_std_usd
                 ws.cell(row, 13, bruto_usd)
+                
+                # Dividir gastos e intereses por 100 para ON/TP/Letras
+                if es_precio_cada_100:
+                    gastos = gastos / 100
+                    interes = interes / 100
+                    # Actualizar celdas con valores divididos
+                    ws.cell(row, 14, interes)  # Col N = Interés
+                    ws.cell(row, 17, gastos)   # Col Q = Gastos
                 
                 # Columnas de running stock: T(20)-Z(26)
                 col_stock_ini_qty = 20   # T
