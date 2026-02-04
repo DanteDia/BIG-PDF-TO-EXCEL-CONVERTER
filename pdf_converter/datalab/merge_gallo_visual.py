@@ -1581,8 +1581,8 @@ class GalloVisualMerger:
                 except:
                     interes_bruto = 0
                 
-                # Costo financiero = intereses - gastos (siempre positivo)
-                costo_financiero = abs(interes_bruto - gastos)
+                # Costo financiero = Interés Devengado(K) - Derechos(M) - Aranceles(L) (siempre positivo)
+                costo_financiero = abs(interes - gastos)
                 
                 auditoria = f"Origen: Gallo-{gallo_sheet_name}"
                 
@@ -1639,7 +1639,8 @@ class GalloVisualMerger:
                 interes_devengado = abs(float(interes_devengado)) if interes_devengado else 0
                 aranceles = abs(float(aranceles)) if aranceles else 0
                 derechos = abs(float(derechos)) if derechos else 0
-                costo_financiero = abs(float(costo_financiero)) if costo_financiero else 0
+                # Costo Financiero = Interés Devengado(K) - Derechos(M) - Aranceles(L)
+                costo_financiero = abs(interes_devengado - derechos - aranceles)
                 
                 # Determinar moneda (asumimos Pesos por default, o buscar en columna si existe)
                 moneda = "Pesos"
@@ -1770,13 +1771,23 @@ class GalloVisualMerger:
                 else:
                     moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
                 
-                # Gastos según moneda
+                # Gastos según moneda - siempre positivos
                 gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
                 if gastos is None:
                     gastos = 0
+                gastos = abs(float(gastos)) if gastos else 0
                 
-                # Ajustar precio para amortizaciones (100 -> 1)
-                if 'amortizacion' in operacion_lower:
+                # Cantidad siempre positiva
+                if cantidad:
+                    cantidad = abs(float(cantidad))
+                
+                # Para amortizaciones: costo /100 y precio ajustado
+                is_amortizacion = 'amortizacion' in operacion_lower or 'amortización' in operacion_lower
+                if is_amortizacion:
+                    # Costo dividido por 100
+                    if costo:
+                        costo = abs(float(costo)) / 100
+                    # Ajustar precio para amortizaciones (100 -> 1)
                     if precio and float(precio) == 100:
                         precio = 1
                 
@@ -1787,8 +1798,9 @@ class GalloVisualMerger:
                 except:
                     cod_num = cod_clean
                 
-                # Bruto
+                # Bruto - siempre positivo
                 bruto = importe if importe else (cantidad * precio if cantidad and precio else 0)
+                bruto = abs(float(bruto)) if bruto else 0
                 
                 # Parsear fecha
                 fecha_dt, _ = self._parse_fecha(fecha)
@@ -1811,7 +1823,7 @@ class GalloVisualMerger:
                     'gastos': gastos,
                     'costo': costo if costo else 0,
                     'origen': f"Gallo-{sheet_name}",
-                    'is_amortizacion': 'amortizacion' in operacion_lower,
+                    'is_amortizacion': is_amortizacion,
                     'auditoria': auditoria,
                 })
         
@@ -1866,8 +1878,11 @@ class GalloVisualMerger:
                 else:
                     moneda_final = moneda_default
                 
-                bruto = importe if importe else 0
+                bruto = abs(float(importe)) if importe else 0
                 auditoria = f"Origen: Visual-{visual_sheet_name} | Cat: {categoria} | Op: {tipo_operacion}"
+                
+                # Cantidad siempre positiva
+                cantidad_val = abs(float(cantidad)) if cantidad else 0
                 
                 all_rentas.append({
                     'tipo_instrumento_val': tipo_instrum,
@@ -1878,11 +1893,11 @@ class GalloVisualMerger:
                     'operacion': str(tipo_operacion).upper() if tipo_operacion else "",
                     'cod_num': cod_num,
                     'especie': instrumento,
-                    'cantidad': cantidad if cantidad else 0,
+                    'cantidad': cantidad_val,
                     'precio': 1,  # Precio = 1 para rentas/dividendos de Visual
                     'bruto': bruto,
                     'interes': 0,
-                    'gastos': gastos if gastos else 0,
+                    'gastos': abs(float(gastos)) if gastos else 0,
                     'costo': 0,
                     'origen': f"Visual-{visual_sheet_name}",
                     'is_amortizacion': False,
@@ -1907,11 +1922,8 @@ class GalloVisualMerger:
             tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
             moneda_emision = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE),"")'
             
-            # Neto calculado
-            if renta['is_amortizacion']:
-                neto = f'=-M{row_out}-P{row_out}'
-            else:
-                neto = f'=M{row_out}-O{row_out}'
+            # Neto calculado: M - N - O - P (siempre la misma fórmula)
+            neto = f'=M{row_out}-N{row_out}-O{row_out}-P{row_out}'
             
             ws.cell(row_out, 1, tipo_instrumento)
             ws.cell(row_out, 2, renta['fecha'])
@@ -2455,6 +2467,10 @@ class GalloVisualMerger:
             importe_original = importe_val  # Guardar original
             if isinstance(importe_val, (int, float)):
                 importe_val = abs(importe_val)
+            # Para amortizaciones con importe=0, usar cantidad como importe
+            tipo_op = str(trans.get('tipo_operacion', '')).upper()
+            if (tipo_op in ['AMORTIZACION', 'AMORTIZACIÓN']) and importe_val == 0 and cantidad_val:
+                importe_val = cantidad_val
             ws.cell(row_out, 13, importe_val)
             ws.cell(row_out, 14, trans['origen'])
             ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
@@ -2600,6 +2616,10 @@ class GalloVisualMerger:
             importe_original = importe_val  # Guardar original
             if isinstance(importe_val, (int, float)):
                 importe_val = abs(importe_val)
+            # Para amortizaciones con importe=0, usar cantidad como importe
+            tipo_op = str(trans.get('tipo_operacion', '')).upper()
+            if (tipo_op in ['AMORTIZACION', 'AMORTIZACIÓN']) and importe_val == 0 and cantidad_val:
+                importe_val = cantidad_val
             ws.cell(row_out, 13, importe_val)
             ws.cell(row_out, 14, trans['origen'])
             ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
