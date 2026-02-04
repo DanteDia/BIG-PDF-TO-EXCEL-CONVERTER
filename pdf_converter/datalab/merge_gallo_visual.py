@@ -40,6 +40,17 @@ class GalloVisualMerger:
     HOJAS_GALLO_TRANSACCIONES = ['Tit Privados Exentos', 'Renta Fija Dolares', 'Tit Privados Exterior',
                                   'Cauciones', 'Titulos Publicos', 'Cedears']
     
+    # Tipos de instrumento que expresan precio cada 100 unidades (dividir por 100 para nominal)
+    TIPOS_PRECIO_CADA_100 = ['obligaciones negociables', 'títulos públicos', 'titulos publicos',
+                             'letras del tesoro', 'letras', 'on', 'titulo publico']
+    
+    def _es_tipo_precio_cada_100(self, tipo_instrumento: str) -> bool:
+        """Verifica si el tipo de instrumento expresa precio cada 100 unidades."""
+        if not tipo_instrumento:
+            return False
+        tipo_lower = tipo_instrumento.lower().strip()
+        return any(t in tipo_lower for t in self.TIPOS_PRECIO_CADA_100)
+    
     def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None):
         """
         Inicializa el merger con las rutas a los archivos.
@@ -456,7 +467,17 @@ class GalloVisualMerger:
             self._materialize_resultado_ventas(wb['Resultado Ventas USD'], "USD")
     
     def _materialize_boletos(self, ws):
-        """Materializa fórmulas en la hoja Boletos."""
+        """
+        Materializa fórmulas en la hoja Boletos.
+        
+        Agrega columna 'Precio Nominal' (Col S, 19) para tipos que expresan precio cada 100.
+        El Bruto y Neto se calculan usando el Precio Nominal.
+        """
+        # Agregar header para Precio Nominal en Col S (19) si no existe
+        if ws.cell(1, 19).value != 'Precio Nominal':
+            ws.cell(1, 19, 'Precio Nominal')
+            ws.cell(1, 19).font = Font(bold=True)
+        
         for row in range(2, ws.max_row + 1):
             # Col G = Cod.Instrum (valor directo)
             cod_instrum = ws.cell(row, 7).value
@@ -467,6 +488,9 @@ class GalloVisualMerger:
             cell_val = ws.cell(row, 1).value
             if isinstance(cell_val, str) and cell_val.startswith('='):
                 ws.cell(row, 1, especie_data.get('tipo_especie', ''))
+            
+            # Obtener tipo de instrumento (ya materializado o valor directo)
+            tipo_instrumento = ws.cell(row, 1).value or especie_data.get('tipo_especie', '')
             
             # Col I (9): InstrumentoConMoneda - Si es fórmula, buscar en cache
             cell_val = ws.cell(row, 9).value
@@ -484,35 +508,44 @@ class GalloVisualMerger:
                     tc = self._get_cotizacion(fecha, str(moneda) if moneda else "Dolar MEP")
                 ws.cell(row, 12, tc)
             
-            # Col M (13): Bruto = Cantidad * Precio - Si es fórmula, calcular
-            cell_val = ws.cell(row, 13).value
-            if isinstance(cell_val, str) and cell_val.startswith('='):
-                cantidad = ws.cell(row, 10).value  # Col J
-                precio = ws.cell(row, 11).value    # Col K
-                try:
-                    bruto = float(cantidad or 0) * float(precio or 0)
-                except:
-                    bruto = 0
-                ws.cell(row, 13, bruto)
+            # Obtener precio original (Col K, 11)
+            precio_original = ws.cell(row, 11).value
+            try:
+                precio_num = float(precio_original or 0)
+            except:
+                precio_num = 0
             
-            # Col P (16): Neto = SI(J>0, J*K+O, J*K-O) donde J=cantidad, K=precio, O=gastos
-            cell_val = ws.cell(row, 16).value
-            if isinstance(cell_val, str) and cell_val.startswith('='):
-                cantidad = ws.cell(row, 10).value  # Col J
-                precio = ws.cell(row, 11).value    # Col K
-                gastos = ws.cell(row, 15).value    # Col O
-                try:
-                    cantidad_num = float(cantidad or 0)
-                    precio_num = float(precio or 0)
-                    gastos_num = float(gastos or 0)
-                    # Fórmula Excel: =SI(J2>0,J2*K2+O2,J2*K2-O2)
-                    if cantidad_num > 0:
-                        neto = cantidad_num * precio_num + gastos_num
-                    else:
-                        neto = cantidad_num * precio_num - gastos_num
-                except:
-                    neto = 0
-                ws.cell(row, 16, neto)
+            # Calcular Precio Nominal: dividir por 100 si es tipo que lo requiere
+            if self._es_tipo_precio_cada_100(tipo_instrumento):
+                precio_nominal = precio_num / 100
+            else:
+                precio_nominal = precio_num
+            
+            # Guardar Precio Nominal en Col S (19)
+            ws.cell(row, 19, precio_nominal)
+            
+            # Col M (13): Bruto = Cantidad * Precio Nominal
+            cantidad = ws.cell(row, 10).value  # Col J
+            try:
+                cantidad_num = float(cantidad or 0)
+            except:
+                cantidad_num = 0
+            
+            bruto = cantidad_num * precio_nominal
+            ws.cell(row, 13, bruto)
+            
+            # Col P (16): Neto = SI(J>0, J*PrecioNominal+O, J*PrecioNominal-O)
+            gastos = ws.cell(row, 15).value    # Col O
+            try:
+                gastos_num = float(gastos or 0)
+            except:
+                gastos_num = 0
+            
+            if cantidad_num > 0:
+                neto = cantidad_num * precio_nominal + gastos_num
+            else:
+                neto = cantidad_num * precio_nominal - gastos_num
+            ws.cell(row, 16, neto)
             
             # Col R (18): Moneda Emisión - Si es fórmula, buscar en cache
             cell_val = ws.cell(row, 18).value
@@ -589,14 +622,27 @@ class GalloVisualMerger:
         para detectar cambio de instrumento. Esto replica exactamente el comportamiento
         de las fórmulas Excel.
         
-        ARS: Columnas Q-W (17-23) para running stock
-        USD: Columnas T-Z (20-26) para running stock
+        IMPORTANTE: Para ON, Títulos Públicos, Letras del Tesoro, el precio viene
+        expresado cada 100 unidades. Se crea columna "Precio Nominal" = Precio/100.
+        
+        ARS: Columnas Q-W (17-23) para running stock, X (24) para Precio Nominal
+        USD: Columnas T-Z (20-26) para running stock, AA (27) para Precio Nominal
         """
         wb = ws.parent
         
+        # Agregar header para Precio Nominal
+        if moneda_tipo == "ARS":
+            col_precio_nominal = 24  # X
+        else:
+            col_precio_nominal = 27  # AA
+        
+        if ws.cell(1, col_precio_nominal).value != 'Precio Nominal':
+            ws.cell(1, col_precio_nominal, 'Precio Nominal')
+            ws.cell(1, col_precio_nominal).font = Font(bold=True)
+        
         # Variables de running stock (persisten entre filas del mismo instrumento)
         stock_cantidad = 0.0
-        stock_precio = 0.0
+        stock_precio = 0.0  # Este será el precio nominal promedio
         prev_cod_instrum = None
         
         for row in range(2, ws.max_row + 1):
@@ -606,6 +652,11 @@ class GalloVisualMerger:
                 continue
             cod_instrum = self._clean_codigo(str(cod_instrum_raw))
             
+            # Obtener tipo de instrumento desde cache
+            especie_data = self._especies_visual_cache.get(cod_instrum, {})
+            tipo_instrumento = ws.cell(row, 2).value or especie_data.get('tipo_especie', '')
+            es_precio_cada_100 = self._es_tipo_precio_cada_100(tipo_instrumento)
+            
             origen = ws.cell(row, 1).value or ""  # Col A = Origen
             is_gallo = origen.upper().startswith("GALLO")
             
@@ -613,10 +664,18 @@ class GalloVisualMerger:
             
             # Columnas varían entre ARS y USD
             if moneda_tipo == "ARS":
-                precio = self._to_float(ws.cell(row, 10).value)   # Col J = Precio
-                bruto = self._to_float(ws.cell(row, 11).value)    # Col K = Bruto
+                precio_original = self._to_float(ws.cell(row, 10).value)   # Col J = Precio
                 interes = self._to_float(ws.cell(row, 12).value)  # Col L = Interés
                 gastos = self._to_float(ws.cell(row, 14).value)   # Col N = Gastos
+                
+                # Calcular Precio Nominal
+                precio_nominal = precio_original / 100 if es_precio_cada_100 else precio_original
+                ws.cell(row, col_precio_nominal, precio_nominal)
+                
+                # Recalcular Bruto con precio nominal
+                bruto = cantidad * precio_nominal
+                ws.cell(row, 11, bruto)  # Col K = Bruto (sobrescribir)
+                
                 # Columnas de running stock: Q(17)-W(23)
                 col_stock_ini_qty = 17   # Q
                 col_stock_ini_price = 18 # R
@@ -626,8 +685,8 @@ class GalloVisualMerger:
                 col_stock_fin_qty = 22   # V
                 col_stock_fin_price = 23 # W
             else:  # USD
-                precio = self._to_float(ws.cell(row, 10).value)   # Col J = Precio base
-                precio_std = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado (ya es valor)
+                precio_original = self._to_float(ws.cell(row, 10).value)   # Col J = Precio base
+                precio_std_original = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado
                 interes = self._to_float(ws.cell(row, 14).value)  # Col N = Interés
                 gastos = self._to_float(ws.cell(row, 17).value)   # Col Q = Gastos (ya es valor)
                 
@@ -658,21 +717,23 @@ class GalloVisualMerger:
                     if tipo_cambio == 0:
                         tipo_cambio = 1.0
                 
-                # Materializar L (Precio Std USD) = K * O
-                precio_std_usd_cell = ws.cell(row, 12).value
-                if isinstance(precio_std_usd_cell, str) and precio_std_usd_cell.startswith('='):
-                    precio_std_usd = precio_std * tipo_cambio
-                    ws.cell(row, 12, precio_std_usd)
+                # Calcular Precio Nominal del precio estandarizado
+                # El precio_std ya tiene x100 de Visual, pero ON/TP/Letras vienen x100 adicional
+                if es_precio_cada_100:
+                    precio_std = precio_std_original / 100
                 else:
-                    precio_std_usd = self._to_float(precio_std_usd_cell)
+                    precio_std = precio_std_original
+                
+                # Guardar Precio Nominal
+                ws.cell(row, col_precio_nominal, precio_std)
+                
+                # Materializar L (Precio Std USD) = Precio Nominal * Tipo Cambio
+                precio_std_usd = precio_std * tipo_cambio
+                ws.cell(row, 12, precio_std_usd)
                 
                 # Materializar M (Bruto USD) = I * L
-                bruto_usd_cell = ws.cell(row, 13).value
-                if isinstance(bruto_usd_cell, str) and bruto_usd_cell.startswith('='):
-                    bruto_usd = cantidad * precio_std_usd
-                    ws.cell(row, 13, bruto_usd)
-                else:
-                    bruto_usd = self._to_float(bruto_usd_cell)
+                bruto_usd = cantidad * precio_std_usd
+                ws.cell(row, 13, bruto_usd)
                 
                 # Columnas de running stock: T(20)-Z(26)
                 col_stock_ini_qty = 20   # T
@@ -687,7 +748,14 @@ class GalloVisualMerger:
             # Si es nuevo instrumento (D{row} != D{row-1}), buscar posición inicial
             if cod_instrum != prev_cod_instrum:
                 # Buscar en hoja de posición correspondiente
-                stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
+                stock_cantidad, stock_precio_raw = self._get_posicion_inicial(wb, cod_instrum, is_gallo)
+                
+                # Convertir precio de posición a nominal si corresponde
+                if es_precio_cada_100:
+                    stock_precio = stock_precio_raw / 100
+                else:
+                    stock_precio = stock_precio_raw
+                
                 # Para USD: convertir precio de posición a USD inmediatamente
                 if moneda_tipo == "USD" and valor_usd_dia > 0:
                     stock_precio = stock_precio / valor_usd_dia
@@ -695,37 +763,34 @@ class GalloVisualMerger:
             
             # Guardar stock inicial para esta fila
             cantidad_stock_inicial = stock_cantidad
-            precio_stock_inicial = stock_precio  # Ya está en USD para hojas USD
+            precio_stock_inicial = stock_precio  # Ya es nominal y en USD para hojas USD
             
             # Calcular costo, neto, resultado según fórmulas Excel
-            # ARS: T(Neto) = K(Bruto) + L(Interés), S(Costo) = IF(I<0, I*R, 0), U(Resultado) = IF(S<>0, ABS(T)-ABS(S), 0)
-            # USD: W(Neto) = M(BrutoUSD) - Q(Gastos), V(Costo) = IF(I<0, I*U, 0), X(Resultado) = IF(V<>0, ABS(W)-ABS(V), 0)
-            
             if cantidad < 0:  # VENTA
                 if moneda_tipo == "ARS":
                     costo = cantidad * precio_stock_inicial  # negativo (cantidad < 0)
-                    neto = bruto + interes  # K + L
+                    neto = bruto + interes  # Bruto (con precio nominal) + Interés
                 else:  # USD
-                    costo = cantidad * precio_stock_inicial  # negativo, precio ya en USD
+                    costo = cantidad * precio_stock_inicial  # negativo, precio ya nominal y USD
                     neto = bruto_usd - gastos  # M - Q
                 # Resultado = IF(Costo<>0, ABS(Neto)-ABS(Costo), 0)
                 resultado = abs(neto) - abs(costo) if costo != 0 else 0
             else:  # COMPRA
                 costo = 0
                 if moneda_tipo == "ARS":
-                    neto = bruto + interes  # K + L
+                    neto = bruto + interes
                 else:
-                    neto = bruto_usd + interes  # Para compra: M + N
+                    neto = bruto_usd + interes
                 resultado = 0  # No hay resultado en compras
             
             # Actualizar stock para la próxima fila
             if cantidad > 0:  # COMPRA - promedio ponderado
                 valor_anterior = stock_cantidad * stock_precio
                 if moneda_tipo == "USD":
-                    # Para USD: usar precio en USD (L = precio_std_usd)
+                    # Para USD: usar precio nominal en USD
                     valor_nuevo = cantidad * precio_std_usd
                 else:
-                    valor_nuevo = cantidad * precio
+                    valor_nuevo = cantidad * precio_nominal
                 stock_cantidad += cantidad
                 if stock_cantidad > 0:
                     stock_precio = (valor_anterior + valor_nuevo) / stock_cantidad
@@ -739,11 +804,10 @@ class GalloVisualMerger:
             # ========== MATERIALIZAR VALORES ==========
             if moneda_tipo == "ARS":
                 # Col O (15): IVA = IF(N>0, N*0.1736, N*-0.1736)
-                # Donde N = Gastos. Si gastos>0: IVA=gastos*0.1736, sino IVA=gastos*-0.1736
                 if gastos > 0:
                     iva = gastos * 0.1736
                 else:
-                    iva = gastos * -0.1736  # gastos negativo * -0.1736 = positivo
+                    iva = gastos * -0.1736
                 ws.cell(row, 15, iva)
             else:  # USD
                 # Col R (18): IVA = IF(Q>0, Q*0.1736, Q*-0.1736)
@@ -755,14 +819,13 @@ class GalloVisualMerger:
             
             # Running stock columns
             ws.cell(row, col_stock_ini_qty, cantidad_stock_inicial)
-            ws.cell(row, col_stock_ini_price, precio_stock_inicial)  # Ya en USD para hojas USD
+            ws.cell(row, col_stock_ini_price, precio_stock_inicial)  # Ya es nominal y en USD para USD
             
-            ws.cell(row, col_costo, costo)  # Ya es negativo para ventas
+            ws.cell(row, col_costo, costo)
             ws.cell(row, col_neto, neto)
             ws.cell(row, col_resultado, resultado)
             ws.cell(row, col_stock_fin_qty, cantidad_stock_final)
             
-            # Para USD, precio_stock_final ya está en USD
             if cantidad_stock_final != 0:
                 ws.cell(row, col_stock_fin_price, precio_stock_final)
             else:
