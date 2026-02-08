@@ -106,8 +106,44 @@ class MarkdownTableParser:
     def parse(self) -> dict[str, TableData]:
         """Parse all tables from the markdown content."""
         if self.format_type == "visual":
-            return self._parse_visual()
+            tables = self._parse_visual()
+            if not tables and "PRECIO TENENCIAS" in self.content.upper():
+                tables = self._parse_first_table_as("PrecioTenenciasIniciales")
+            return tables
         return self._parse_gallo()
+
+    def _parse_first_table_as(self, section_name: str) -> dict[str, TableData]:
+        """Parsea la primera tabla encontrada y la guarda con el nombre indicado."""
+        lines = self.content.split('\n')
+        current_headers = None
+        current_rows = []
+        in_table = False
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line.startswith('|'):
+                if in_table and current_headers:
+                    break
+                continue
+
+            cells = self._parse_table_row(line)
+            if not in_table:
+                if i + 1 < len(lines) and '---' in lines[i + 1]:
+                    current_headers = cells
+                    in_table = True
+                continue
+
+            if '---' in line:
+                continue
+
+            if cells and any(c.strip() for c in cells):
+                if not all(c.strip() in ['', '.'] for c in cells):
+                    current_rows.append(cells)
+
+        if current_headers:
+            self._save_table(section_name, current_headers, current_rows)
+
+        return self.tables
     
     def _parse_gallo(self) -> dict[str, TableData]:
         """Parse Gallo format tables."""
@@ -646,6 +682,10 @@ def convert_markdown_to_excel(
     
     if not tables:
         console.print("[yellow]⚠️ No tables found in markdown[/yellow]")
+        # Guardar un Excel vacío para evitar errores downstream
+        exporter = ExcelExporter()
+        exporter.wb.create_sheet("SinDatos")
+        exporter.save(output_path)
         return output_path
     
     console.print(f"[green]✓ Found {len(tables)} sections ({format_type} format)[/green]")
