@@ -738,7 +738,9 @@ def postprocess_gallo_workbook(wb: Workbook, tables: dict = None) -> Workbook:
         if tables and sheet_name in tables:
             metadata = tables[sheet_name].metadata
         
-        if 'resultado' in sheet_lower and 'total' in sheet_lower:
+        if sheet_lower == 'preciotenenciasiniciales':
+            process_precio_tenencias_sheet(ws)
+        elif 'resultado' in sheet_lower and 'total' in sheet_lower:
             process_resultado_totales(ws)
         
         elif any(x in sheet_lower for x in ['privados', 'renta fija', 'cauciones']):
@@ -841,8 +843,24 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
     ]
 
     def to_float(val) -> float:
-        try:
+        if val is None:
+            return 0.0
+        if isinstance(val, (int, float)):
             return float(val)
+        try:
+            numeric = parse_parentheses_negative(str(val).strip())
+            if numeric is not None:
+                return float(numeric)
+        except Exception:
+            pass
+        try:
+            numeric = parse_numeric(str(val).strip())
+            if numeric is not None:
+                return float(numeric)
+        except Exception:
+            pass
+        try:
+            return float(str(val).replace('.', '').replace(',', '.'))
         except Exception:
             return 0.0
 
