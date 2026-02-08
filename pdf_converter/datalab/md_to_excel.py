@@ -87,6 +87,8 @@ class MarkdownTableParser:
         "RESUMEN": "Resumen",
         "POSICIÓN DE TÍTULOS": "Posicion Titulos",
         "POSICION DE TITULOS": "Posicion Titulos",
+        "PRECIO TENENCIAS": "PrecioTenenciasIniciales",
+        "PRECIO TENENCIAS INICIALES": "PrecioTenenciasIniciales",
     }
     
     def __init__(self, markdown_content: str):
@@ -97,7 +99,7 @@ class MarkdownTableParser:
     def _detect_format(self) -> str:
         """Detect if this is Gallo or Visual format."""
         content_upper = self.content.upper()
-        if "BOLETOS" in content_upper or "RESULTADO VENTAS" in content_upper:
+        if "BOLETOS" in content_upper or "RESULTADO VENTAS" in content_upper or "PRECIO TENENCIAS" in content_upper:
             return "visual"
         return "gallo"
     
@@ -243,7 +245,7 @@ class MarkdownTableParser:
         current_categoria = None  # For Rentas/Dividendos
         
         # Sections that should NOT be split by currency
-        no_currency_sections = {"Resumen", "Posicion Titulos", "Boletos"}
+        no_currency_sections = {"Resumen", "Posicion Titulos", "Boletos", "PrecioTenenciasIniciales"}
         
         # Sections that need extra columns
         boletos_section = "Boletos"

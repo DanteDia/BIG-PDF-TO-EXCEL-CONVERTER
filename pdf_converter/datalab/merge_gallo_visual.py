@@ -54,7 +54,7 @@ class GalloVisualMerger:
         # Usar matching parcial para los términos de la lista
         return any(t in tipo_lower for t in self.TIPOS_PRECIO_CADA_100)
     
-    def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None):
+    def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None, precio_tenencias_path: str = None):
         """
         Inicializa el merger con las rutas a los archivos.
         
@@ -62,9 +62,11 @@ class GalloVisualMerger:
             gallo_path: Ruta al Excel generado de Gallo
             visual_path: Ruta al Excel generado de Visual
             aux_data_dir: Directorio con hojas auxiliares (default: pdf_converter/datalab/aux_data)
+            precio_tenencias_path: Ruta al Excel generado desde el PDF de Precio Tenencias (opcional)
         """
         self.gallo_path = Path(gallo_path)
         self.visual_path = Path(visual_path)
+        self.precio_tenencias_path = Path(precio_tenencias_path) if precio_tenencias_path else None
         
         if aux_data_dir is None:
             aux_data_dir = Path(__file__).parent / 'aux_data'
@@ -73,6 +75,7 @@ class GalloVisualMerger:
         # Cargar workbooks
         self.gallo_wb = load_workbook(gallo_path)
         self.visual_wb = load_workbook(visual_path)
+        self.precio_tenencias_wb = load_workbook(precio_tenencias_path) if precio_tenencias_path else None
         
         # Cargar hojas auxiliares
         self.especies_visual = self._load_aux('EspeciesVisual.xlsx')
@@ -86,6 +89,8 @@ class GalloVisualMerger:
         self._cotizacion_cache = {}
         self._precios_iniciales_cache = {}
         self._precios_iniciales_by_codigo = {}  # codigo -> {ticker, precio}
+        self._precio_tenencias_by_codigo = {}
+        self._precio_tenencias_by_ticker = {}
         
         # Construir caches
         self._build_caches()
@@ -160,6 +165,42 @@ class GalloVisualMerger:
                     'ticker': ticker_key if ticker else None,
                     'precio': precio if precio else 0
                 }
+        # Cache PrecioTenencias (si existe)
+        if self.precio_tenencias_wb and 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames:
+            self._build_precio_tenencias_cache(self.precio_tenencias_wb['PrecioTenenciasIniciales'])
+
+    def _build_precio_tenencias_cache(self, ws):
+        """Construye cache de PrecioTenenciasIniciales por código y ticker."""
+        headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
+
+        def find_col(keyword: str):
+            for idx, h in enumerate(headers, start=1):
+                if keyword in h:
+                    return idx
+            return None
+
+        col_codigo = find_col('cod')
+        col_ticker = find_col('ticker')
+        col_precio = find_col('precio tenencia')
+
+        if not col_precio:
+            return
+
+        for row in range(2, ws.max_row + 1):
+            codigo = ws.cell(row, col_codigo).value if col_codigo else None
+            ticker = ws.cell(row, col_ticker).value if col_ticker else None
+            precio = ws.cell(row, col_precio).value
+
+            try:
+                precio_val = float(precio) if precio is not None else 0
+            except Exception:
+                precio_val = 0
+
+            if codigo:
+                codigo_clean = self._clean_codigo(str(codigo))
+                self._precio_tenencias_by_codigo[codigo_clean] = precio_val
+            if ticker:
+                self._precio_tenencias_by_ticker[str(ticker).strip().upper()] = precio_val
     
     def _clean_codigo(self, codigo) -> str:
         """Limpia código de especie: quita puntos, ceros a izquierda, etc."""
@@ -367,6 +408,27 @@ class GalloVisualMerger:
                 return data.get('precio', 0)
         
         return 0
+
+    def _get_precio_tenencia_inicial(self, codigo: Optional[str], ticker: str) -> float:
+        """Obtiene precio tenencia inicial desde PrecioTenenciasIniciales (por código o ticker)."""
+        if codigo:
+            codigo_clean = self._clean_codigo(str(codigo))
+            precio = self._precio_tenencias_by_codigo.get(codigo_clean, 0)
+            if precio:
+                return precio
+
+        ticker_upper = str(ticker).upper().strip()
+        if ticker_upper:
+            precio = self._precio_tenencias_by_ticker.get(ticker_upper, 0)
+            if precio:
+                return precio
+            # Probar variaciones OCR 0↔O
+            for ticker_var in self._generate_ticker_variations(ticker_upper):
+                precio = self._precio_tenencias_by_ticker.get(ticker_var, 0)
+                if precio:
+                    return precio
+
+        return 0
     
     def _get_codigo_from_ticker(self, ticker: str) -> Optional[int]:
         """Obtiene código de especie desde el ticker usando PreciosInicialesEspecies."""
@@ -440,6 +502,7 @@ class GalloVisualMerger:
         
         # Agregar hojas auxiliares
         self._add_aux_sheets(wb)
+        self._add_precio_tenencias_sheet(wb)
         
         if output_mode == "formulas":
             return (wb, None)
@@ -955,7 +1018,20 @@ class GalloVisualMerger:
                     precio_nominal = self._to_float(pos_ws.cell(r, 22).value)  # Col V = Precio Nominal
                     return (cantidad, precio_nominal)
         
-        # No encontrado en Posicion - buscar en PreciosInicialesEspecies como fallback
+        # No encontrado en Posicion - usar PrecioTenenciasIniciales si está disponible
+        precio_tenencia = self._precio_tenencias_by_codigo.get(cod_instrum, 0)
+        if precio_tenencia:
+            precio_bruto = precio_tenencia
+            tipo_instrumento = self._vlookup_especies_visual(cod_instrum, 16)
+            if self._es_tipo_precio_cada_100(tipo_instrumento):
+                precio_nominal = precio_bruto / 100
+            else:
+                precio_nominal = precio_bruto
+            if for_usd:
+                precio_nominal = precio_nominal / self.COTIZACION_INICIO_PERIODO
+            return (0.0, precio_nominal)
+
+        # Si no está, buscar en PreciosInicialesEspecies como fallback
         # Esto cubre el caso de instrumentos que se venden sin haber estado en posicion
         precio_data = self._precios_iniciales_by_codigo.get(cod_instrum, {})
         if precio_data.get('precio'):
@@ -1074,8 +1150,14 @@ class GalloVisualMerger:
                 cotizacion_usd = 1148.93  # Dólar Cable 31/12/2024
                 precio_inicial = precio_inicial * cotizacion_usd
             
-            # Precio a utilizar = precio de PreciosInicialesEspecies
-            precio_a_utilizar = precio_inicial
+            # Precio a utilizar = PrecioTenenciasIniciales si existe, sino PreciosInicialesEspecies
+            precio_tenencia = self._get_precio_tenencia_inicial(codigo, ticker)
+            if precio_tenencia > 0:
+                precio_a_utilizar = precio_tenencia
+                origen_precio = "PrecioTenenciasIniciales"
+            else:
+                precio_a_utilizar = precio_inicial
+                origen_precio = "PreciosInicialesEspecies"
             
             # Escribir fila
             ws.cell(row_out, 1, tipo_especie)
@@ -1091,7 +1173,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 11, precio_usd)
             ws.cell(row_out, 12, precio_inicial)
             ws.cell(row_out, 13, "")  # precio costo (en proceso)
-            ws.cell(row_out, 14, "")  # origen precio costo
+            ws.cell(row_out, 14, origen_precio)  # origen precio costo
             ws.cell(row_out, 15, "")  # comentarios precio costo
             ws.cell(row_out, 16, precio_a_utilizar)
             ws.cell(row_out, 17, importe_pesos)
@@ -1949,6 +2031,7 @@ class GalloVisualMerger:
     def _create_resultado_ventas_ars(self, wb: Workbook):
         """Crea hoja Resultado Ventas ARS con transacciones de Boletos filtradas por Pesos."""
         ws = wb.create_sheet("Resultado Ventas ARS")
+        use_precio_tenencias = bool(self.precio_tenencias_wb and 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames)
         
         # Headers (27 columnas - agregamos Precio Nominal)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
@@ -2054,7 +2137,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 14, trans['gastos'])
             
             # Col O: IVA = SI(N>0, N*0.1736, N*-0.1736) basado en Gastos (col N)
-            ws.cell(row_out, 15, f'=IF(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')
+            ws.cell(row_out, 15, f'=SI(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')
             
             # Col P: Resultado (vacío por ahora)
             ws.cell(row_out, 16, "")
@@ -2086,39 +2169,45 @@ class GalloVisualMerger:
             
             # Col Q: Cantidad Stock Inicial
             if row_out == 2:
-                ws.cell(row_out, 17, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                ws.cell(row_out, 17, f'=SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0))')
                 # Col R: Precio Stock Inicial - Usa col V (19 desde D) = Precio Nominal
-                # Con fallback a PreciosInicialesEspecies Col I (Precio Nominal en pesos)
-                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
-                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
-                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:I,9,FALSE),0)'
-                ws.cell(row_out, 18, f'=LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio))')
-                explicacion_q = f"VLOOKUP(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col V=Precio Nominal, fallback PreciosInicialesEspecies)"
+                # Con fallback a PrecioTenenciasIniciales y luego PreciosInicialesEspecies
+                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                if use_precio_tenencias:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0))'
+                else:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0)'
+                ws.cell(row_out, 18, f'=SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}))')
+                explicacion_q = f"BUSCARV(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 17, f'=IF(D{row_out}=D{prev},V{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
+                ws.cell(row_out, 17, f'=SI(D{row_out}=D{prev},V{prev},SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0)))')
                 # Col R: Con fallback
-                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
-                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
-                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:I,9,FALSE),0)'
-                ws.cell(row_out, 18, f'=IF(D{row_out}=D{prev},W{prev},LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio)))')
-                explicacion_q = f"SI D{row_out}=D{prev}: W{prev}, SINO: VLOOKUP(D{row_out}→Posicion col V=Precio Nominal, fallback PreciosInicialesEspecies)"
+                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                if use_precio_tenencias:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0))'
+                else:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0)'
+                ws.cell(row_out, 18, f'=SI(D{row_out}=D{prev},W{prev},SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})))')
+                explicacion_q = f"SI D{row_out}=D{prev}: W{prev}, SINO: BUSCARV(D{row_out}→Posicion col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col S: Costo por venta = Cantidad * Precio Stock (si venta, cantidad < 0)
-            ws.cell(row_out, 19, f'=IF(I{row_out}<0,I{row_out}*R{row_out},0)')
+            ws.cell(row_out, 19, f'=SI(I{row_out}<0,I{row_out}*R{row_out},0)')
             
             # Col T: Neto Calculado = Bruto + Interés
             ws.cell(row_out, 20, f'=K{row_out}+L{row_out}')
             
             # Col U: Resultado Calculado = |Neto| - |Costo|
-            ws.cell(row_out, 21, f'=IF(S{row_out}<>0,ABS(T{row_out})-ABS(S{row_out}),0)')
+            ws.cell(row_out, 21, f'=SI(S{row_out}<>0,ABS(T{row_out})-ABS(S{row_out}),0)')
             
             # Col V: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 22, f'=I{row_out}+Q{row_out}')
             
             # Col W: Precio Stock Final (promedio ponderado si compra, mantiene si venta)
             # IMPORTANTE: Usar AA (Precio Nominal) en vez de J (Precio) para ON/TP/Letras
-            ws.cell(row_out, 23, f'=IF(V{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+Q{row_out})=0,0,(I{row_out}*AA{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out})),R{row_out}))')
+            ws.cell(row_out, 23, f'=SI(V{row_out}=0,0,SI(I{row_out}>0,SI((I{row_out}+Q{row_out})=0,0,(I{row_out}*AA{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out})),R{row_out}))')
             
             # Col X: Explicación Q (específica para esta fila)
             ws.cell(row_out, 24, explicacion_q)
@@ -2132,11 +2221,12 @@ class GalloVisualMerger:
             ws.cell(row_out, 26, f"Origen: {trans['origen']} | Cod: {cod}")
             
             # Col AA (27): Precio Nominal = Precio/100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 27, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Título",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),J{row_out}/100,J{row_out})')
+            ws.cell(row_out, 27, f'=SI(O(ESNUMERO(HALLAR("Obligacion",B{row_out})),ESNUMERO(HALLAR("Titulo",B{row_out})),ESNUMERO(HALLAR("Título",B{row_out})),ESNUMERO(HALLAR("Letra",B{row_out}))),J{row_out}/100,J{row_out})')
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
         """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
         ws = wb.create_sheet("Resultado Ventas USD")
+        use_precio_tenencias = bool(self.precio_tenencias_wb and 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames)
         
         # Headers (29 columnas - agregamos Precio Nominal)
         headers = ['Origen', 'Tipo de Instrumento', 'Instrumento', 'Cod.Instrum',
@@ -2260,16 +2350,16 @@ class GalloVisualMerger:
             if 'dolar' in str(moneda_val).lower():
                 ws.cell(row_out, 15, 1)  # Operaciones en dólares: tipo cambio = 1
             else:
-                ws.cell(row_out, 15, f'=IF(P{row_out}=0,1,1/P{row_out})')  # Pesos: 1/ValorUSDDia
+                ws.cell(row_out, 15, f'=SI(P{row_out}=0,1,1/P{row_out})')  # Pesos: 1/ValorUSDDia
             
             # Col P: Valor USD Dia - VLOOKUP con fecha
-            ws.cell(row_out, 16, f'=IFERROR(VLOOKUP(E{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0)')
+            ws.cell(row_out, 16, f'=SI.ERROR(BUSCARV(E{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSO),0)')
             
             # Col Q: Gastos
             ws.cell(row_out, 17, trans['gastos'])
             
             # Col R: IVA = SI(Q>0, Q*0.1736, Q*-0.1736) basado en Gastos (col Q)
-            ws.cell(row_out, 18, f'=IF(Q{row_out}>0,Q{row_out}*0.1736,Q{row_out}*-0.1736)')
+            ws.cell(row_out, 18, f'=SI(Q{row_out}>0,Q{row_out}*0.1736,Q{row_out}*-0.1736)')
             
             # Col S: Resultado (vacío)
             ws.cell(row_out, 19, "")
@@ -2279,41 +2369,47 @@ class GalloVisualMerger:
             
             # Col T: Cantidad Stock Inicial - busca en Posicion, si no está devuelve 0 (no fallback necesario)
             if row_out == 2:
-                ws.cell(row_out, 20, f'=IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0))')
+                ws.cell(row_out, 20, f'=SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0))')
                 # Col U: Precio Stock USD
                 # Primero intenta VLOOKUP a Posicion / cotización día
-                # Si es 0, usa fallback a PreciosInicialesEspecies Col J (Precio Nominal USD ya calculado)
-                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
-                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
-                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:J,10,FALSE),0)'
-                # Fórmula: IF(P=0, 0, LET(pos, VLOOKUP_posicion, IF(pos=0, fallback, pos/P)))
-                ws.cell(row_out, 21, f'=IF(P{row_out}=0,0,LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio/P{row_out})))')
-                explicacion_t = f"T=VLOOKUP(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col V=Precio Nominal, fallback PreciosInicialesEspecies)"
+                # Si es 0, usa fallback a PrecioTenenciasIniciales y luego PreciosInicialesEspecies
+                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                if use_precio_tenencias:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0))'
+                else:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0)'
+                # Fórmula: SI(P=0,0,SI(pos=0,fallback, pos/P))
+                ws.cell(row_out, 21, f'=SI(P{row_out}=0,0,SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio}/P{row_out},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})/P{row_out}))')
+                explicacion_t = f"T=BUSCARV(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 20, f'=IF(D{row_out}=D{prev},Y{prev},IF(LEFT(A{row_out},5)="gallo",IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSE),0),IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSE),0)))')
+                ws.cell(row_out, 20, f'=SI(D{row_out}=D{prev},Y{prev},SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0)))')
                 # Col U: Con fallback
-                pos_lookup_gallo = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSE),0)'
-                pos_lookup_visual = f'IFERROR(VLOOKUP(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSE),0)'
-                fallback_precio = f'IFERROR(VLOOKUP(D{row_out},PreciosInicialesEspecies!A:J,10,FALSE),0)'
-                ws.cell(row_out, 21, f'=IF(D{row_out}=D{prev},Z{prev},IF(P{row_out}=0,0,LET(pos_precio,IF(LEFT(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}),IF(pos_precio=0,{fallback_precio},pos_precio/P{row_out}))))')
-                explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: VLOOKUP(col V=Precio Nominal, fallback PreciosInicialesEspecies)"
+                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                if use_precio_tenencias:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0))'
+                else:
+                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0)'
+                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev},Z{prev},SI(P{row_out}=0,0,SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio}/P{row_out},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})/P{row_out}))))')
+                explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: BUSCARV(col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
-            ws.cell(row_out, 22, f'=IF(I{row_out}<0,I{row_out}*U{row_out},0)')
+            ws.cell(row_out, 22, f'=SI(I{row_out}<0,I{row_out}*U{row_out},0)')
             
             # Col W: Neto Calculado = Bruto USD - Gastos
             ws.cell(row_out, 23, f'=M{row_out}-Q{row_out}')
             
             # Col X: Resultado Calculado = |Neto| - |Costo|
-            ws.cell(row_out, 24, f'=IF(V{row_out}<>0,ABS(W{row_out})-ABS(V{row_out}),0)')
+            ws.cell(row_out, 24, f'=SI(V{row_out}<>0,ABS(W{row_out})-ABS(V{row_out}),0)')
             
             # Col Y: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 25, f'=I{row_out}+T{row_out}')
             
             # Col Z: Precio Stock Final (promedio ponderado)
             # IMPORTANTE: Usar AC (Precio Nominal) en vez de L (Precio Std USD) para ON/TP/Letras
-            ws.cell(row_out, 26, f'=IF(Y{row_out}=0,0,IF(I{row_out}>0,IF((I{row_out}+T{row_out})=0,0,(I{row_out}*AC{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
+            ws.cell(row_out, 26, f'=SI(Y{row_out}=0,0,SI(I{row_out}>0,SI((I{row_out}+T{row_out})=0,0,(I{row_out}*AC{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
             
             # Col AA: Explicación T-Z
             cantidad_val = trans['cantidad'] or 0
@@ -2324,7 +2420,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K*O")
             
             # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 29, f'=IF(OR(ISNUMBER(SEARCH("Obligacion",B{row_out})),ISNUMBER(SEARCH("Titulo",B{row_out})),ISNUMBER(SEARCH("Título",B{row_out})),ISNUMBER(SEARCH("Letra",B{row_out}))),L{row_out}/100,L{row_out})')
+            ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion",B{row_out})),ESNUMERO(HALLAR("Titulo",B{row_out})),ESNUMERO(HALLAR("Título",B{row_out})),ESNUMERO(HALLAR("Letra",B{row_out}))),L{row_out}/100,L{row_out})')
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados.
@@ -2393,6 +2489,12 @@ class GalloVisualMerger:
             if isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
                 importe = resultado - gastos_orig - (costo if isinstance(costo, (int, float)) else 0)
             else:
+                importe = 0
+            # Amortizaciones no afectan el resumen anual
+            if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
+                importe = 0
+            # Amortizaciones no afectan el resumen anual
+            if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
                 importe = 0
             
             origen = rentas_ws.cell(rentas_row, 18).value  # Col R
@@ -2467,10 +2569,6 @@ class GalloVisualMerger:
             importe_original = importe_val  # Guardar original
             if isinstance(importe_val, (int, float)):
                 importe_val = abs(importe_val)
-            # Para amortizaciones con importe=0, usar cantidad como importe
-            tipo_op = str(trans.get('tipo_operacion', '')).upper()
-            if (tipo_op in ['AMORTIZACION', 'AMORTIZACIÓN']) and importe_val == 0 and cantidad_val:
-                importe_val = cantidad_val
             ws.cell(row_out, 13, importe_val)
             ws.cell(row_out, 14, trans['origen'])
             ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
@@ -2616,10 +2714,6 @@ class GalloVisualMerger:
             importe_original = importe_val  # Guardar original
             if isinstance(importe_val, (int, float)):
                 importe_val = abs(importe_val)
-            # Para amortizaciones con importe=0, usar cantidad como importe
-            tipo_op = str(trans.get('tipo_operacion', '')).upper()
-            if (tipo_op in ['AMORTIZACION', 'AMORTIZACIÓN']) and importe_val == 0 and cantidad_val:
-                importe_val = cantidad_val
             ws.cell(row_out, 13, importe_val)
             ws.cell(row_out, 14, trans['origen'])
             ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
@@ -2921,6 +3015,22 @@ class GalloVisualMerger:
         
         # Enriquecer PreciosInicialesEspecies con columnas calculadas para fallback
         self._enrich_precios_iniciales(wb)
+
+    def _add_precio_tenencias_sheet(self, wb: Workbook):
+        """Agrega la hoja PrecioTenenciasIniciales si está disponible."""
+        if not self.precio_tenencias_wb:
+            return
+        if 'PrecioTenenciasIniciales' not in self.precio_tenencias_wb.sheetnames:
+            return
+        if 'PrecioTenenciasIniciales' in wb.sheetnames:
+            return
+
+        ws_src = self.precio_tenencias_wb['PrecioTenenciasIniciales']
+        ws_dst = wb.create_sheet('PrecioTenenciasIniciales')
+
+        for row in ws_src.iter_rows():
+            for cell in row:
+                ws_dst.cell(row=cell.row, column=cell.column, value=cell.value)
     
     def _enrich_precios_iniciales(self, wb: Workbook):
         """
@@ -2968,7 +3078,7 @@ class GalloVisualMerger:
 
 
 def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = None, 
-                       output_mode: str = "formulas") -> str:
+                       output_mode: str = "formulas", precio_tenencias_path: str = None) -> str:
     """
     Función principal para ejecutar el merge.
     
@@ -2981,7 +3091,7 @@ def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = Non
     Returns:
         Ruta del archivo generado (o tupla de rutas si output_mode="both")
     """
-    merger = GalloVisualMerger(gallo_path, visual_path)
+    merger = GalloVisualMerger(gallo_path, visual_path, precio_tenencias_path=precio_tenencias_path)
     wb_formulas, wb_values = merger.merge(output_mode=output_mode)
     
     if output_path is None:

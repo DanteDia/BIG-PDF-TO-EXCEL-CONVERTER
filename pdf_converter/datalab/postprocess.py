@@ -807,6 +807,82 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                     cell.value = 0
 
 
+def process_precio_tenencias_sheet(ws: Worksheet) -> None:
+    """
+    Procesa la hoja PrecioTenenciasIniciales:
+    - Divide la columna Especie en: Cod.Especie, Ticker, Especie
+    - Calcula Precio Tenencia Inicial = Importe invertido / Cantidad
+    """
+    headers = [str(ws.cell(1, c).value or '').strip() for c in range(1, ws.max_column + 1)]
+    headers_lower = [h.lower() for h in headers]
+
+    def find_col(keyword: str) -> Optional[int]:
+        for idx, h in enumerate(headers_lower, start=1):
+            if keyword in h:
+                return idx
+        return None
+
+    especie_col = find_col('especie')
+    cantidad_col = find_col('cantidad')
+    importe_col = find_col('importe')
+    resultado_col = find_col('resultado')
+
+    if not especie_col or not cantidad_col or not importe_col:
+        return
+
+    new_headers = [
+        'Cod.Especie',
+        'Ticker',
+        'Especie',
+        'Cantidad tenencia',
+        'Importe invertido',
+        'Resultado',
+        'Precio tenencia inicial'
+    ]
+
+    def to_float(val) -> float:
+        try:
+            return float(val)
+        except Exception:
+            return 0.0
+
+    rows = []
+    for row in range(2, ws.max_row + 1):
+        especie_val = ws.cell(row, especie_col).value or ""
+        tokens = str(especie_val).strip().split()
+        cod = tokens[0] if len(tokens) > 0 else ""
+        ticker = tokens[1] if len(tokens) > 1 else ""
+        nombre = " ".join(tokens[2:]) if len(tokens) > 2 else ""
+
+        cantidad_val = ws.cell(row, cantidad_col).value
+        importe_val = ws.cell(row, importe_col).value
+        resultado_val = ws.cell(row, resultado_col).value if resultado_col else 0
+
+        cantidad_num = to_float(cantidad_val)
+        importe_num = to_float(importe_val)
+        precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
+
+        rows.append([
+            cod,
+            ticker,
+            nombre,
+            cantidad_num,
+            importe_num,
+            to_float(resultado_val),
+            precio_tenencia,
+        ])
+
+    # Limpiar hoja y escribir nueva estructura
+    ws.delete_rows(1, ws.max_row)
+
+    for col_idx, header in enumerate(new_headers, 1):
+        ws.cell(row=1, column=col_idx, value=header)
+
+    for row_idx, row_data in enumerate(rows, 2):
+        for col_idx, value in enumerate(row_data, 1):
+            ws.cell(row=row_idx, column=col_idx, value=value)
+
+
 def postprocess_visual_workbook(wb: Workbook) -> Workbook:
     """
     Apply Visual format post-processing to a workbook.
@@ -816,6 +892,8 @@ def postprocess_visual_workbook(wb: Workbook) -> Workbook:
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         process_visual_sheet(ws, sheet_name)
+        if sheet_name.lower() == 'preciotenenciasiniciales':
+            process_precio_tenencias_sheet(ws)
     
     console.print("[green]✓ Post-processing complete[/green]")
     return wb

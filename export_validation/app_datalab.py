@@ -190,7 +190,7 @@ def convert_pdf_to_excel_streamlit(pdf_bytes: bytes, pdf_name: str, format_type:
 
 
 # File uploaders
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("### 📄 PDF Gallo")
@@ -214,9 +214,20 @@ with col2:
     if visual_file:
         st.success(f"✅ {visual_file.name} ({visual_file.size / 1024:.1f} KB)")
 
+with col3:
+    st.markdown("### 📄 PDF Precio Tenencias")
+    precio_tenencias_file = st.file_uploader(
+        "Selecciona el PDF de Precio Tenencias",
+        type=['pdf'],
+        key='precio_tenencias',
+        help="Reporte con Especie, Cantidad, Importe invertido y Resultado"
+    )
+    if precio_tenencias_file:
+        st.success(f"✅ {precio_tenencias_file.name} ({precio_tenencias_file.size / 1024:.1f} KB)")
+
 # Process button
 if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True):
-    if not gallo_file and not visual_file:
+    if not gallo_file and not visual_file and not precio_tenencias_file:
         st.error("⚠️ Por favor carga al menos un archivo PDF")
     else:
         api_key = os.environ.get("DATALAB_API_KEY", "").strip()
@@ -232,7 +243,7 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                     
                     results = {}
                     step = 0
-                    total_steps = (1 if gallo_file else 0) + (1 if visual_file else 0)
+                    total_steps = (1 if gallo_file else 0) + (1 if visual_file else 0) + (1 if precio_tenencias_file else 0)
                     
                     # Process Gallo if provided
                     if gallo_file:
@@ -273,6 +284,24 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         results['visual_comitente_num'] = visual_comitente_num
                         results['visual_comitente_name'] = visual_comitente_name
                         results['visual_markdown'] = visual_markdown
+
+                    # Process Precio Tenencias if provided
+                    if precio_tenencias_file:
+                        status_text.text("📊 Procesando reporte Precio Tenencias...")
+                        step += 1
+                        progress_bar.progress(int(step / (total_steps + 1) * 100))
+
+                        precio_excel, _, _, precio_markdown = convert_pdf_to_excel_streamlit(
+                            precio_tenencias_file.getvalue(),
+                            precio_tenencias_file.name,
+                            "precio_tenencias",
+                            temp_dir,
+                            lambda msg: status_text.text(msg)
+                        )
+
+                        with open(precio_excel, "rb") as f:
+                            results['precio_tenencias'] = f.read()
+                        results['precio_tenencias_markdown'] = precio_markdown
                     
                     progress_bar.progress(100)
                     status_text.text("✅ Procesamiento completado!")
@@ -284,17 +313,26 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         # Create temp files for merge
                         gallo_temp = os.path.join(temp_dir, "gallo_for_merge.xlsx")
                         visual_temp = os.path.join(temp_dir, "visual_for_merge.xlsx")
+                        precio_tenencias_temp = os.path.join(temp_dir, "precio_tenencias_for_merge.xlsx")
                         
                         with open(gallo_temp, "wb") as f:
                             f.write(results['gallo'])
                         with open(visual_temp, "wb") as f:
                             f.write(results['visual'])
+                        if 'precio_tenencias' in results:
+                            with open(precio_tenencias_temp, "wb") as f:
+                                f.write(results['precio_tenencias'])
                         
                         # Get aux_data path
                         aux_data_dir = Path(__file__).parent.parent / "pdf_converter" / "datalab" / "aux_data"
                         
                         # Execute merge - returns (wb_formulas, wb_values)
-                        merger = GalloVisualMerger(gallo_temp, visual_temp, str(aux_data_dir))
+                        merger = GalloVisualMerger(
+                            gallo_temp,
+                            visual_temp,
+                            str(aux_data_dir),
+                            precio_tenencias_path=precio_tenencias_temp if 'precio_tenencias' in results else None
+                        )
                         wb_formulas, wb_values = merger.merge(output_mode="both")
                         
                         # Save both versions
