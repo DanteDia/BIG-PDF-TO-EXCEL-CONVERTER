@@ -864,6 +864,22 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
         except Exception:
             return 0.0
 
+    def parse_cantidad_tenencia(val) -> float:
+        """Corrige cantidades con tres ceros decimales (ej: 844.000 -> 844)."""
+        if val is None:
+            return 0.0
+        if isinstance(val, (int, float)):
+            return float(val)
+        raw = str(val).strip()
+        # Detectar formato con .000 o ,000 al final
+        if re.match(r'^\d+[\.,]000$', raw):
+            raw = re.sub(r'[\.,]000$', '', raw)
+            try:
+                return float(raw)
+            except Exception:
+                return 0.0
+        return to_float(raw)
+
     rows = []
     for row in range(2, ws.max_row + 1):
         especie_val = ws.cell(row, especie_col).value or ""
@@ -876,7 +892,7 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
         importe_val = ws.cell(row, importe_col).value
         resultado_val = ws.cell(row, resultado_col).value if resultado_col else 0
 
-        cantidad_num = to_float(cantidad_val)
+        cantidad_num = parse_cantidad_tenencia(cantidad_val)
         importe_num = to_float(importe_val)
         precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
 
