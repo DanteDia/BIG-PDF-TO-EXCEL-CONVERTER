@@ -166,8 +166,12 @@ class GalloVisualMerger:
                     'precio': precio if precio else 0
                 }
         # Cache PrecioTenencias (si existe)
-        if self.precio_tenencias_wb and 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames:
-            self._build_precio_tenencias_cache(self.precio_tenencias_wb['PrecioTenenciasIniciales'])
+        if self.precio_tenencias_wb:
+            if 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames:
+                ws_precio = self.precio_tenencias_wb['PrecioTenenciasIniciales']
+            else:
+                ws_precio = self.precio_tenencias_wb.active
+            self._build_precio_tenencias_cache(ws_precio)
 
     def _build_precio_tenencias_cache(self, ws):
         """Construye cache de PrecioTenenciasIniciales por código y ticker."""
@@ -2493,9 +2497,6 @@ class GalloVisualMerger:
             # Amortizaciones no afectan el resumen anual
             if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
                 importe = 0
-            # Amortizaciones no afectan el resumen anual
-            if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
-                importe = 0
             
             origen = rentas_ws.cell(rentas_row, 18).value  # Col R
             
@@ -2640,6 +2641,9 @@ class GalloVisualMerger:
             if isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
                 importe = resultado - gastos_orig - (costo if isinstance(costo, (int, float)) else 0)
             else:
+                importe = 0
+            # Amortizaciones no afectan el resumen anual
+            if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
                 importe = 0
             
             origen = rentas_ws.cell(rentas_row, 18).value  # Col R
@@ -3020,12 +3024,10 @@ class GalloVisualMerger:
         """Agrega la hoja PrecioTenenciasIniciales si está disponible."""
         if not self.precio_tenencias_wb:
             return
-        if 'PrecioTenenciasIniciales' not in self.precio_tenencias_wb.sheetnames:
-            return
         if 'PrecioTenenciasIniciales' in wb.sheetnames:
             return
 
-        ws_src = self.precio_tenencias_wb['PrecioTenenciasIniciales']
+        ws_src = self.precio_tenencias_wb['PrecioTenenciasIniciales'] if 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames else self.precio_tenencias_wb.active
         ws_dst = wb.create_sheet('PrecioTenenciasIniciales')
 
         for row in ws_src.iter_rows():

@@ -107,10 +107,15 @@ class MarkdownTableParser:
         """Parse all tables from the markdown content."""
         if self.format_type == "visual":
             tables = self._parse_visual()
-            if not tables and "PRECIO TENENCIAS" in self.content.upper():
+        else:
+            tables = self._parse_gallo()
+
+        if not tables:
+            content_upper = self.content.upper()
+            if "PRECIO TENENCIAS" in content_upper or ("ESPECIE" in content_upper and "CANTIDAD" in content_upper):
                 tables = self._parse_first_table_as("PrecioTenenciasIniciales")
-            return tables
-        return self._parse_gallo()
+
+        return tables
 
     def _parse_first_table_as(self, section_name: str) -> dict[str, TableData]:
         """Parsea la primera tabla encontrada y la guarda con el nombre indicado."""
