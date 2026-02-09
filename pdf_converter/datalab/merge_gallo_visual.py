@@ -1067,7 +1067,13 @@ class GalloVisualMerger:
         para ON, Títulos Públicos y Letras del Tesoro.
         Col U=21 es Tipo Instrumento (VLOOKUP a EspeciesVisual).
         """
-        pos_sheet = 'Posicion Inicial Gallo' if is_gallo else 'Posicion Final Gallo'
+        # Para cálculos de Resultado Ventas, siempre usar Posicion Inicial Gallo si existe
+        pos_sheet = 'Posicion Inicial Gallo' if 'Posicion Inicial Gallo' in wb.sheetnames else (
+            'Posicion Final Gallo' if 'Posicion Final Gallo' in wb.sheetnames else None
+        )
+
+        if not pos_sheet:
+            return (0.0, 0.0)
         
         if pos_sheet in wb.sheetnames:
             pos_ws = wb[pos_sheet]
