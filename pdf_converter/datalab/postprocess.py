@@ -4,8 +4,9 @@ Transforms raw extracted data to match the expected Excel format.
 """
 
 import re
+from pathlib import Path
 from typing import Optional, List
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from rich.console import Console
 
@@ -828,6 +829,9 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
     cantidad_col = find_col('cantidad')
     importe_col = find_col('importe')
     resultado_col = find_col('resultado')
+    cod_col = find_col('cod')
+    ticker_col = find_col('ticker')
+    precio_col = find_col('precio tenencia')
 
     if not especie_col or not cantidad_col or not importe_col:
         return
@@ -880,6 +884,102 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
                 return 0.0
         return to_float(raw)
 
+    def _clean_codigo(val: str) -> str:
+        if val is None:
+            return ""
+        s = str(val).strip()
+        if s.endswith('.0'):
+            s = s[:-2]
+        s = s.replace('.', '').replace(',', '')
+        try:
+            return str(int(float(s)))
+        except Exception:
+            return s
+
+    def _normalize_ratio_key(val: str) -> str:
+        if not val:
+            return ""
+        return re.sub(r"[^A-Z0-9]", "", str(val).strip().upper())
+
+    def _load_ratio_cache() -> dict:
+        try:
+            aux_path = Path(__file__).parent / 'aux_data' / 'RatiosCedearsAcciones.xlsx'
+            if not aux_path.exists():
+                return {}
+            wb_ratios = load_workbook(aux_path)
+            ws_ratios = wb_ratios.active
+            cache = {}
+            for r in range(2, ws_ratios.max_row + 1):
+                nombre = ws_ratios.cell(r, 1).value
+                ratio_val = ws_ratios.cell(r, 2).value
+                key = ws_ratios.cell(r, 3).value
+                if ratio_val is None:
+                    continue
+                try:
+                    ratio_num = float(ratio_val)
+                except Exception:
+                    continue
+                if key:
+                    normalized_key = _normalize_ratio_key(key)
+                    if normalized_key:
+                        cache[normalized_key] = ratio_num
+                if nombre:
+                    nombre_key = _normalize_ratio_key(str(nombre).strip().split()[0])
+                    if nombre_key:
+                        cache.setdefault(nombre_key, ratio_num)
+            return cache
+        except Exception:
+            return {}
+
+    def _load_acciones_exterior_codigos() -> set:
+        try:
+            aux_path = Path(__file__).parent / 'aux_data' / 'EspeciesVisual.xlsx'
+            if not aux_path.exists():
+                return set()
+            wb_especies = load_workbook(aux_path)
+            ws_especies = wb_especies.active
+            cods = set()
+            for r in range(2, ws_especies.max_row + 1):
+                codigo = ws_especies.cell(r, 3).value  # Col C
+                moneda_emision = ws_especies.cell(r, 7).value  # Col G
+                tipo_especie = ws_especies.cell(r, 18).value  # Col R
+                if not codigo:
+                    continue
+                if str(moneda_emision).strip() == "Dolar Cable (exterior)" and str(tipo_especie).strip() == "Acciones":
+                    cods.add(_clean_codigo(codigo))
+            return cods
+        except Exception:
+            return set()
+
+    ratio_cache = _load_ratio_cache()
+    acciones_exterior_codigos = _load_acciones_exterior_codigos()
+
+    # Si ya está estructurada (Cod/Ticker/Precio Tenencia), solo recalcular y ajustar ratio
+    if cod_col and ticker_col and precio_col:
+        for row in range(2, ws.max_row + 1):
+            cod = ws.cell(row, cod_col).value or ""
+            ticker = ws.cell(row, ticker_col).value or ""
+            nombre = ws.cell(row, especie_col).value or ""
+
+            cantidad_val = ws.cell(row, cantidad_col).value
+            importe_val = ws.cell(row, importe_col).value
+
+            cantidad_num = parse_cantidad_tenencia(cantidad_val)
+            importe_num = to_float(importe_val)
+            precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
+
+            cod_clean = _clean_codigo(cod)
+            if cod_clean in acciones_exterior_codigos:
+                search_text = f"{ticker} {nombre}".strip().upper()
+                key = _normalize_ratio_key(search_text.split()[0]) if search_text else ""
+                ratio = ratio_cache.get(key)
+                if ratio and cantidad_num:
+                    precio_tenencia = (importe_num / cantidad_num) / ratio
+
+            ws.cell(row, precio_col, value=precio_tenencia)
+
+        return
+
     rows = []
     for row in range(2, ws.max_row + 1):
         especie_val = ws.cell(row, especie_col).value or ""
@@ -895,6 +995,15 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
         cantidad_num = parse_cantidad_tenencia(cantidad_val)
         importe_num = to_float(importe_val)
         precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
+
+        # Ajuste por ratio para Acciones del Exterior (CEDEAR)
+        cod_clean = _clean_codigo(cod)
+        if cod_clean in acciones_exterior_codigos:
+            search_text = f"{ticker} {nombre}".strip().upper()
+            key = _normalize_ratio_key(search_text.split()[0]) if search_text else ""
+            ratio = ratio_cache.get(key)
+            if ratio and cantidad_num:
+                precio_tenencia = (importe_num / cantidad_num) / ratio
 
         rows.append([
             cod,

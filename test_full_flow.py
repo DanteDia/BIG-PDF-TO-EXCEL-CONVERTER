@@ -25,10 +25,12 @@ def test_full_flow(skip_pdf_conversion=False):
     # PDFs de test (anotar para futuros tests)
     visual_pdf = 'VeroLandro2025.pdf'
     gallo_pdf = 'Vero_2025_gallo.PDF'
+    precio_tenencias_pdf = 'landroPrecioTenencias.pdf'
     
     # Output Excels intermedios
     visual_excel = 'TEST_Visual_from_PDF.xlsx'
     gallo_excel = 'TEST_Gallo_from_PDF.xlsx'
+    precio_tenencias_excel = 'TEST_PrecioTenencias_from_PDF.xlsx'
     
     # Output final del merge
     merge_output_formulas = 'TEST_MERGE_FULL_FLOW_formulas.xlsx'
@@ -61,18 +63,30 @@ def test_full_flow(skip_pdf_conversion=False):
         except Exception as e:
             print(f'✗ Error: {e}')
             return False
+
+        # PASO 2.5: Convertir PrecioTenencias PDF
+        print('\n=== PASO 2.5: Convirtiendo Precio Tenencias PDF a Excel ===')
+        print(f'Input: {precio_tenencias_pdf}')
+        try:
+            convert_pdf_to_excel(precio_tenencias_pdf, precio_tenencias_excel)
+            print(f'✓ Precio Tenencias Excel generado: {precio_tenencias_excel}')
+        except Exception as e:
+            print(f'✗ Error: {e}')
+            return False
     else:
         print('\n=== PASO 1-2: SALTANDO conversión PDF (usando Excel existentes) ===')
         # Usar los Excel ya generados
         visual_excel = '12128_LANDRO_VERONICA_INES_Visual_Generado_OK.xlsx'
         gallo_excel = '12128_LANDRO_VERONICA_INES_Gallo_Generado_OK.xlsx'
+        precio_tenencias_excel = 'precio_estructurado.xlsx'
         print(f'  Visual Excel: {visual_excel}')
         print(f'  Gallo Excel: {gallo_excel}')
+        print(f'  Precio Tenencias Excel: {precio_tenencias_excel}')
     
     # PASO 3: Merge
     print('\n=== PASO 3: Ejecutando Merge Gallo + Visual ===')
     try:
-        merger = GalloVisualMerger(gallo_excel, visual_excel, str(aux_dir))
+        merger = GalloVisualMerger(gallo_excel, visual_excel, str(aux_dir), precio_tenencias_path=precio_tenencias_excel)
         wb_formulas, wb_values = merger.merge(output_mode="both")
         
         # Guardar ambos archivos
