@@ -24,7 +24,8 @@ from reportlab.platypus import (
     PageBreak, KeepTogether, Image
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -1155,6 +1156,254 @@ class ExcelToPdfExporter:
                 f.write(pdf_bytes)
         
         return pdf_bytes
+
+    def export_to_client_excel(self, output_path: str = None) -> bytes:
+        """Exporta un Excel para cliente con las mismas secciones del PDF (valores planos)."""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Reporte"
+
+        bold = Font(bold=True)
+
+        def write_row(row_idx: int, values: List[Any], is_bold: bool = False) -> int:
+            for col_idx, val in enumerate(values, start=1):
+                cell = ws.cell(row_idx, col_idx, val)
+                if is_bold:
+                    cell.font = bold
+            return row_idx + 1
+
+        def write_table(row_idx: int, headers: List[str], rows: List[List[Any]]) -> int:
+            row_idx = write_row(row_idx, headers, is_bold=True)
+            for r in rows:
+                row_idx = write_row(row_idx, r)
+            return row_idx
+
+        row = 1
+
+        # ===== Resumen =====
+        row = write_row(row, ["Resumen"], is_bold=True)
+        ventas_ars = self._calculate_ventas_total('Resultado Ventas ARS')
+        ventas_usd = self._calculate_ventas_total('Resultado Ventas USD')
+        rentas_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Rentas', 'AMORTIZACION'])
+        dividendos_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Dividendos'])
+        rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
+        dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
+        cau_int_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'interes') +
+                       self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'interes'))
+        cau_cf_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo') +
+                      self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo'))
+        cau_int_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'interes') +
+                       self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'interes'))
+        cau_cf_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo') +
+                      self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo'))
+        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_int_ars + cau_cf_ars
+        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_int_usd + cau_cf_usd
+
+        row = write_table(
+            row,
+            ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', 'Total'],
+            [
+                ['ARS', ventas_ars, 0, 0, rentas_ars, dividendos_ars, 0, 0, 0, cau_int_ars, cau_cf_ars, total_ars],
+                ['USD', ventas_usd, 0, 0, rentas_usd, dividendos_usd, 0, 0, 0, cau_int_usd, cau_cf_usd, total_usd],
+            ]
+        )
+        row += 2
+
+        # ===== Boletos =====
+        row = write_row(row, ["Boletos"], is_bold=True)
+        headers, rows = self._read_sheet_data('Boletos')
+        if rows:
+            col_map = [
+                ('Concertación', 'Fecha'),
+                ('Liquidación', 'Liquid.'),
+                ('Nro. Boleto', 'Boleto'),
+                ('Moneda', 'Mon.'),
+                ('Tipo Operación', 'Operación'),
+                ('Cod.Instrum', 'Cód.'),
+                ('Instrumento Crudo', 'Instrumento'),
+                ('Cantidad', 'Cantidad'),
+                ('Precio Nominal', 'Precio Nom.'),
+                ('Tipo Cambio', 'T.C.'),
+                ('Bruto', 'Bruto'),
+                ('Interés', 'Interés'),
+                ('Gastos', 'Gastos'),
+                ('Neto Calculado', 'Neto'),
+            ]
+            col_indices = [self._get_col_index(headers, c) for c, _ in col_map]
+            tipo_idx = self._get_col_index(headers, 'Tipo de Instrumento')
+            by_tipo = {}
+            for r in rows:
+                tipo = r[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(r) else "Otros"
+                tipo = tipo if tipo else "Otros"
+                by_tipo.setdefault(tipo, []).append(r)
+            for tipo in sorted(by_tipo.keys()):
+                row = write_row(row, [tipo], is_bold=True)
+                table_headers = [d for _, d in col_map]
+                table_rows = []
+                for r in by_tipo[tipo]:
+                    table_rows.append([r[idx] if idx >= 0 and idx < len(r) else None for idx in col_indices])
+                row = write_table(row, table_headers, table_rows)
+                row += 1
+        else:
+            row = write_row(row, ["Sin operaciones en el período"])
+        row += 2
+
+        # ===== Resultado Ventas ARS/USD =====
+        for moneda in ['ARS', 'USD']:
+            row = write_row(row, ["Resultado Ventas", moneda], is_bold=True)
+            headers, rows = self._read_sheet_data(f"Resultado Ventas {moneda}")
+            if rows:
+                if moneda == 'ARS':
+                    col_map = [
+                        ('Instrumento', 'Instrumento'),
+                        ('Cod.Instrum', 'Cód.'),
+                        ('Concertación', 'Fecha'),
+                        ('Tipo Operación', 'Tipo Op.'),
+                        ('Cantidad', 'Cantidad'),
+                        ('Precio Nominal', 'Precio Nom.'),
+                        ('Bruto', 'Bruto'),
+                        ('Gastos', 'Gastos'),
+                        ('IVA', 'IVA'),
+                        ('Resultado Calculado(final)', 'Resultado'),
+                    ]
+                else:
+                    col_map = [
+                        ('Instrumento', 'Instrumento'),
+                        ('Cod.Instrum', 'Cód.'),
+                        ('Concertación', 'Fecha'),
+                        ('Tipo Operación', 'Tipo Op.'),
+                        ('Cantidad', 'Cantidad'),
+                        ('Precio Nominal', 'Precio Nom.'),
+                        ('Bruto en USD', 'Bruto USD'),
+                        ('Gastos', 'Gastos'),
+                        ('IVA', 'IVA'),
+                        ('Resultado Calculado(final)', 'Resultado'),
+                    ]
+                col_indices = [self._get_col_index(headers, c) for c, _ in col_map]
+                tipo_idx = self._get_col_index(headers, 'Tipo de Instrumento')
+                by_tipo = {}
+                for r in rows:
+                    tipo = r[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(r) else "Otros"
+                    tipo = tipo if tipo else "Otros"
+                    by_tipo.setdefault(tipo, []).append(r)
+                for tipo in sorted(by_tipo.keys()):
+                    row = write_row(row, [tipo], is_bold=True)
+                    table_headers = [d for _, d in col_map]
+                    table_rows = []
+                    for r in by_tipo[tipo]:
+                        table_rows.append([r[idx] if idx >= 0 and idx < len(r) else None for idx in col_indices])
+                    row = write_table(row, table_headers, table_rows)
+                    row += 1
+            else:
+                row = write_row(row, ["Sin operaciones en el período"])
+            row += 2
+
+        # ===== Rentas y Dividendos ARS/USD =====
+        for moneda in ['ARS', 'USD']:
+            row = write_row(row, ["Rentas y Dividendos", moneda], is_bold=True)
+            headers, rows = self._read_sheet_data(f"Rentas Dividendos {moneda}")
+            if rows:
+                col_map = [
+                    ('Concertación', 'Concertación'),
+                    ('Liquidación', 'Liquidación'),
+                    ('Nro. NDC', 'Nro. NDC'),
+                    ('Tipo Operación', 'Tipo Operación'),
+                    ('Cantidad', 'Cantidad'),
+                    ('Moneda', 'Moneda'),
+                    ('Tipo de Cambio', 'T.C.'),
+                    ('Gastos', 'Gastos'),
+                    ('Importe', 'Importe'),
+                ]
+                col_indices = [self._get_col_index(headers, c) for c, _ in col_map]
+                cat_idx = self._get_col_index(headers, 'Categoría')
+                tipo_idx = self._get_col_index(headers, 'tipo_instrumento', ['Tipo de Instrumento'])
+                instr_idx = self._get_col_index(headers, 'Instrumento')
+                by_cat = {}
+                for r in rows:
+                    cat = r[cat_idx] if cat_idx >= 0 and cat_idx < len(r) else "Otros"
+                    cat = cat if cat else "Otros"
+                    tipo = r[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(r) else "Sin tipo"
+                    tipo = tipo if tipo else "Sin tipo"
+                    instr = r[instr_idx] if instr_idx >= 0 and instr_idx < len(r) else "Sin nombre"
+                    instr = instr if instr else "Sin nombre"
+                    by_cat.setdefault(cat, {}).setdefault(tipo, {}).setdefault(instr, []).append(r)
+                cat_order = ['Rentas', 'Dividendos', 'Otros']
+                sorted_cats = sorted(by_cat.keys(), key=lambda x: cat_order.index(x) if x in cat_order else 999)
+                for cat in sorted_cats:
+                    row = write_row(row, [cat], is_bold=True)
+                    for tipo in sorted(by_cat[cat].keys()):
+                        row = write_row(row, [f"  {tipo}"])
+                        for instr in sorted(by_cat[cat][tipo].keys()):
+                            row = write_row(row, [f"    {instr}"])
+                            table_headers = [d for _, d in col_map]
+                            table_rows = []
+                            for r in by_cat[cat][tipo][instr]:
+                                table_rows.append([r[idx] if idx >= 0 and idx < len(r) else None for idx in col_indices])
+                            row = write_table(row, table_headers, table_rows)
+                            row += 1
+            else:
+                row = write_row(row, ["Sin operaciones en el período"])
+            row += 2
+
+        # ===== Cauciones Tomadoras/Colocadoras =====
+        for tipo in ['Tomadoras', 'Colocadoras']:
+            row = write_row(row, [f"Cauciones {tipo}"], is_bold=True)
+            headers, rows = self._read_sheet_data(f"Cauciones {tipo}")
+            if not rows:
+                headers, rows = self._read_sheet_data('Cauciones')
+            if rows:
+                col_map = [
+                    ('Concertación', 'Concertación'),
+                    ('Plazo', 'Plazo'),
+                    ('Liquidación', 'Liquidación'),
+                    ('Operación', 'Operación'),
+                    ('# Boleto', '# Boleto'),
+                    ('Contado', 'Contado'),
+                    ('Futuro', 'Futuro'),
+                    ('Tipo de cambio', 'T.C.'),
+                    ('Tasa (%)', 'Tasa (%)'),
+                    ('Interés Bruto', 'Int. Bruto'),
+                    ('Interés Devengad', 'Int. Dev.'),
+                    ('Aranceles', 'Aranceles'),
+                    ('Derechos', 'Derechos'),
+                    ('Costo financiero', 'Costo Fin.'),
+                ]
+                col_indices = [self._get_col_index(headers, c) for c, _ in col_map]
+                moneda_idx = self._get_col_index(headers, 'Moneda')
+                costo_idx = self._get_col_index(headers, 'Costo financiero')
+                by_moneda = {}
+                for r in rows:
+                    moneda = r[moneda_idx] if moneda_idx >= 0 and moneda_idx < len(r) and r[moneda_idx] else "Pesos"
+                    by_moneda.setdefault(moneda, []).append(r)
+                for moneda in ['Pesos', 'Dólares', 'Dolar MEP', 'Dolar Cable']:
+                    if moneda not in by_moneda:
+                        continue
+                    row = write_row(row, [f"  {moneda}"], is_bold=True)
+                    table_headers = [d for _, d in col_map]
+                    table_rows = []
+                    total_cf = 0.0
+                    for r in by_moneda[moneda]:
+                        table_rows.append([r[idx] if idx >= 0 and idx < len(r) else None for idx in col_indices])
+                        try:
+                            total_cf += float(r[costo_idx] or 0) if costo_idx >= 0 and costo_idx < len(r) else 0
+                        except (ValueError, TypeError):
+                            pass
+                    row = write_table(row, table_headers, table_rows)
+                    row = write_row(row, ["Totales:", total_cf])
+                    row += 1
+            else:
+                row = write_row(row, ["Sin operaciones en el período"])
+            row += 2
+
+        from io import BytesIO
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        data = buffer.read()
+        if output_path:
+            with open(output_path, 'wb') as f:
+                f.write(data)
+        return data
 
 
 def export_excel_to_pdf(excel_path: str, output_path: str = None,

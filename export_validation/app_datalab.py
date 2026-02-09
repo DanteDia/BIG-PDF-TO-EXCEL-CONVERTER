@@ -523,6 +523,34 @@ if st.session_state.processed_files is not None:
             os.unlink(tmp_excel_path)
             
             return pdf_bytes
+
+        def generate_client_excel():
+            """Genera Excel para cliente con mismas secciones del PDF (valores planos)."""
+            import tempfile
+
+            merged_values_bytes = st.session_state.processed_files.get('merged_values')
+            if not merged_values_bytes:
+                merged_values_bytes = st.session_state.processed_files.get('merged')
+                if not merged_values_bytes:
+                    raise RuntimeError("No hay Excel disponible. Reprocese los PDFs.")
+
+            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
+                tmp.write(merged_values_bytes)
+                tmp_excel_path = tmp.name
+
+            cliente_info = {
+                'numero': comitente_num or 'XXXXX',
+                'nombre': comitente_name or 'CLIENTE'
+            }
+            exporter = ExcelToPdfExporter(tmp_excel_path, cliente_info)
+            exporter.periodo_inicio = pdf_periodo_inicio
+            exporter.periodo_fin = pdf_periodo_fin
+            exporter.anio = int(pdf_anio)
+
+            excel_bytes = exporter.export_to_client_excel()
+
+            os.unlink(tmp_excel_path)
+            return excel_bytes
         
         # Auto-generar PDF si no existe o si cambiaron parámetros
         pdf_params_key = f"{pdf_periodo_inicio}_{pdf_periodo_fin}_{pdf_anio}"
@@ -543,6 +571,14 @@ if st.session_state.processed_files is not None:
                     st.success("✅ PDF regenerado correctamente")
             except Exception as e:
                 st.error(f"Error generando PDF: {str(e)}")
+
+        # Excel cliente (misma estructura del PDF)
+        if 'client_excel' not in st.session_state.processed_files:
+            try:
+                with st.spinner("Generando Excel para cliente..."):
+                    st.session_state.processed_files['client_excel'] = generate_client_excel()
+            except Exception as e:
+                st.error(f"Error generando Excel cliente: {str(e)}")
         
         # Botón de descarga del PDF
         if 'pdf' in st.session_state.processed_files:
@@ -554,6 +590,17 @@ if st.session_state.processed_files is not None:
                 mime="application/pdf",
                 use_container_width=True,
                 key='download_pdf'
+            )
+
+        if 'client_excel' in st.session_state.processed_files:
+            client_filename = merged_filename.replace('.xlsx', '_cliente.xlsx')
+            st.download_button(
+                label="📊 Descargar Excel para cliente",
+                data=st.session_state.processed_files['client_excel'],
+                file_name=client_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key='download_client_excel'
             )
     
     # Preview
