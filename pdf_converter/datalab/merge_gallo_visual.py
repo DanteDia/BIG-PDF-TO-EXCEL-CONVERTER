@@ -1185,7 +1185,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 19, importe_usd)
             ws.cell(row_out, 20, porc_usd)
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
-            tipo_instrumento = f'=IFERROR(VLOOKUP(D{row_out},EspeciesVisual!C:R,16,FALSE),"")'
+            tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
             # Col V (22): Precio Nominal = Precio a Utilizar (ya viene correcto)
             ws.cell(row_out, 22, precio_a_utilizar)
@@ -1306,7 +1306,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 19, importe_usd)
             ws.cell(row_out, 20, porc_usd)
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
-            tipo_instrumento = f'=IFERROR(VLOOKUP(D{row_out},EspeciesVisual!C:R,16,FALSE),"")'
+            tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
             # Col V (22): Precio Nominal = Precio a Utilizar (ya viene correcto)
             ws.cell(row_out, 22, precio_a_utilizar)
@@ -1501,23 +1501,23 @@ class GalloVisualMerger:
         for row_out, trans in enumerate(all_transactions, start=2):
             # Fórmulas con row_out correcto
             # Tipo de Instrumento: usa VLOOKUP si no viene de Visual
-            tipo_instrumento = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE),"")' if not trans['tipo_instrumento_val'] else trans['tipo_instrumento_val']
+            tipo_instrumento = f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:R;16;FALSO))' if not trans['tipo_instrumento_val'] else trans['tipo_instrumento_val']
             
             # InstrumentoConMoneda
-            instrumento_con_moneda = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE),"")'
+            instrumento_con_moneda = f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:Q;15;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:Q;15;FALSO))'
             
             # Tipo Cambio: fórmula simplificada compatible con Excel 2013 español
             # Usa VLOOKUP simple por fecha (asumiendo que Cotización tiene fecha en col A, valor en col B)
-            tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
+            tipo_cambio = f'=SI(E{row_out}="Pesos";1;SI(ESERROR(BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO));0;BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO)))'
             
             # Precio Nominal: dividir por 100 si es ON, Títulos Públicos o Letras del Tesoro
             # Busca en el Tipo de Instrumento (col A) si contiene Obligacion, Titulo/Título o Letra
-            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",A{row_out})),ISNUMBER(SEARCH("Titulo",A{row_out})),ISNUMBER(SEARCH("Título",A{row_out})),ISNUMBER(SEARCH("Letra",A{row_out}))),K{row_out}/100,K{row_out})'
+            precio_nominal = f'=SI(O(ESNUMERO(HALLAR("Obligacion";A{row_out}));ESNUMERO(HALLAR("Titulo";A{row_out}));ESNUMERO(HALLAR("Título";A{row_out}));ESNUMERO(HALLAR("Letra";A{row_out})));K{row_out}/100;K{row_out})'
             
             # Bruto y Neto usan Precio Nominal (col T) en lugar de Precio (col K)
             bruto = f'=J{row_out}*T{row_out}'
-            neto = f'=IF(J{row_out}>0,J{row_out}*T{row_out}+O{row_out},J{row_out}*T{row_out}-O{row_out})'
-            moneda_emision = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE),"")'
+            neto = f'=SI(J{row_out}>0;J{row_out}*T{row_out}+O{row_out};J{row_out}*T{row_out}-O{row_out})'
+            moneda_emision = f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:Q;5;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:Q;5;FALSO))'
             
             ws.cell(row_out, 1, tipo_instrumento)
             ws.cell(row_out, 2, trans['fecha'])
@@ -2001,10 +2001,10 @@ class GalloVisualMerger:
         # Escribir transacciones ordenadas con fórmulas correctas
         for row_out, renta in enumerate(all_rentas, start=2):
             # Fórmulas con row_out correcto
-            tipo_instrumento = renta['tipo_instrumento_val'] if renta['tipo_instrumento_val'] else f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:R,16,FALSE),"")'
-            instrumento_con_moneda = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,15,FALSE),"")'
-            tipo_cambio = f'=IF(E{row_out}="Pesos",1,IFERROR(VLOOKUP(B{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSE),0))'
-            moneda_emision = f'=IFERROR(VLOOKUP(G{row_out},EspeciesVisual!C:Q,5,FALSE),"")'
+            tipo_instrumento = renta['tipo_instrumento_val'] if renta['tipo_instrumento_val'] else f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:R;16;FALSO))'
+            instrumento_con_moneda = f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:Q;15;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:Q;15;FALSO))'
+            tipo_cambio = f'=SI(E{row_out}="Pesos";1;SI(ESERROR(BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO));0;BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO)))'
+            moneda_emision = f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:Q;5;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:Q;5;FALSO))'
             
             # Neto calculado: M - N - O - P (siempre la misma fórmula)
             neto = f'=M{row_out}-N{row_out}-O{row_out}-P{row_out}'
@@ -2119,6 +2119,12 @@ class GalloVisualMerger:
                 'gastos': gastos if gastos else 0,
             })
         
+        def _si_error(expr: str, fallback: str) -> str:
+            return f'SI(ESERROR({expr});{fallback};{expr})'
+
+        def _si_error(expr: str, fallback: str) -> str:
+            return f'SI(ESERROR({expr});{fallback};{expr})'
+
         # Escribir transacciones con VALORES (no fórmulas excepto para cálculos)
         for row_out, trans in enumerate(transactions, start=2):
             # Columnas A-N: Valores directos
@@ -2139,7 +2145,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 14, trans['gastos'])
             
             # Col O: IVA = SI(N>0, N*0.1736, N*-0.1736) basado en Gastos (col N)
-            ws.cell(row_out, 15, f'=SI(N{row_out}>0,N{row_out}*0.1736,N{row_out}*-0.1736)')
+            ws.cell(row_out, 15, f'=SI(N{row_out}>0;N{row_out}*0,1736;N{row_out}*-0,1736)')
             
             # Col P: Resultado (vacío por ahora)
             ws.cell(row_out, 16, "")
@@ -2171,45 +2177,51 @@ class GalloVisualMerger:
             
             # Col Q: Cantidad Stock Inicial
             if row_out == 2:
-                ws.cell(row_out, 17, f'=SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0))')
+                ws.cell(row_out, 17, f'=SI(IZQUIERDA(A{row_out};5)="gallo";{_si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:I;6;FALSO)", "0")};{_si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:I;6;FALSO)", "0")})')
                 # Col R: Precio Stock Inicial - Usa col V (19 desde D) = Precio Nominal
                 # Con fallback a PrecioTenenciasIniciales y luego PreciosInicialesEspecies
-                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
-                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_gallo = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:V;19;FALSO)", "0")
+                pos_lookup_visual = _si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:V;19;FALSO)", "0")
                 if use_precio_tenencias:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0))'
+                    fallback_precio = _si_error(
+                        f"BUSCARV(D{row_out};PrecioTenenciasIniciales!A:G;7;FALSO)",
+                        _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:I;9;FALSO)", "0")
+                    )
                 else:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0)'
-                ws.cell(row_out, 18, f'=SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual}))')
+                    fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:I;9;FALSO)", "0")
+                ws.cell(row_out, 18, f'=SI(SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})=0;{fallback_precio};SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual}))')
                 explicacion_q = f"BUSCARV(D{row_out}→{'Posicion Inicial' if is_gallo else 'Posicion Final'} col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 17, f'=SI(D{row_out}=D{prev},V{prev},SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0)))')
+                ws.cell(row_out, 17, f'=SI(D{row_out}=D{prev};V{prev};SI(IZQUIERDA(A{row_out};5)="gallo";{_si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:I;6;FALSO)", "0")};{_si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:I;6;FALSO)", "0")}))')
                 # Col R: Con fallback
-                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
-                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_gallo = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:V;19;FALSO)", "0")
+                pos_lookup_visual = _si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:V;19;FALSO)", "0")
                 if use_precio_tenencias:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0))'
+                    fallback_precio = _si_error(
+                        f"BUSCARV(D{row_out};PrecioTenenciasIniciales!A:G;7;FALSO)",
+                        _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:I;9;FALSO)", "0")
+                    )
                 else:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:I,9,FALSO),0)'
-                ws.cell(row_out, 18, f'=SI(D{row_out}=D{prev},W{prev},SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})))')
+                    fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:I;9;FALSO)", "0")
+                ws.cell(row_out, 18, f'=SI(D{row_out}=D{prev};W{prev};SI(SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})=0;{fallback_precio};SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})))')
                 explicacion_q = f"SI D{row_out}=D{prev}: W{prev}, SINO: BUSCARV(D{row_out}→Posicion col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col S: Costo por venta = Cantidad * Precio Stock (si venta, cantidad < 0)
-            ws.cell(row_out, 19, f'=SI(I{row_out}<0,I{row_out}*R{row_out},0)')
+            ws.cell(row_out, 19, f'=SI(I{row_out}<0;I{row_out}*R{row_out};0)')
             
             # Col T: Neto Calculado = Bruto + Interés
             ws.cell(row_out, 20, f'=K{row_out}+L{row_out}')
             
             # Col U: Resultado Calculado = |Neto| - |Costo|
-            ws.cell(row_out, 21, f'=SI(S{row_out}<>0,ABS(T{row_out})-ABS(S{row_out}),0)')
+            ws.cell(row_out, 21, f'=SI(S{row_out}<>0;ABS(T{row_out})-ABS(S{row_out});0)')
             
             # Col V: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 22, f'=I{row_out}+Q{row_out}')
             
             # Col W: Precio Stock Final (promedio ponderado si compra, mantiene si venta)
             # IMPORTANTE: Usar AA (Precio Nominal) en vez de J (Precio) para ON/TP/Letras
-            ws.cell(row_out, 23, f'=SI(V{row_out}=0,0,SI(I{row_out}>0,SI((I{row_out}+Q{row_out})=0,0,(I{row_out}*AA{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out})),R{row_out}))')
+            ws.cell(row_out, 23, f'=SI(V{row_out}=0;0;SI(I{row_out}>0;SI((I{row_out}+Q{row_out})=0;0;(I{row_out}*AA{row_out}+Q{row_out}*R{row_out})/(I{row_out}+Q{row_out}));R{row_out}))')
             
             # Col X: Explicación Q (específica para esta fila)
             ws.cell(row_out, 24, explicacion_q)
@@ -2223,7 +2235,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 26, f"Origen: {trans['origen']} | Cod: {cod}")
             
             # Col AA (27): Precio Nominal = Precio/100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 27, f'=SI(O(ESNUMERO(HALLAR("Obligacion",B{row_out})),ESNUMERO(HALLAR("Titulo",B{row_out})),ESNUMERO(HALLAR("Título",B{row_out})),ESNUMERO(HALLAR("Letra",B{row_out}))),J{row_out}/100,J{row_out})')
+            ws.cell(row_out, 27, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));J{row_out}/100;J{row_out})')
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
         """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
@@ -2244,6 +2256,9 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
+        def _si_error(expr: str, fallback: str) -> str:
+            return f'SI(ESERROR({expr});{fallback};{expr})'
+
         # Recolectar transacciones de Boletos con moneda contiene "Dolar"
         boletos_ws = wb['Boletos']
         transactions = []
@@ -2270,7 +2285,7 @@ class GalloVisualMerger:
                 tipo_instrumento = especie_data.get('tipo_especie', '')
             else:
                 tipo_instrumento = tipo_instrumento_cell
-            
+
             # Instrumento: obtener del cache si es fórmula
             instrumento_cell = boletos_ws.cell(boletos_row, 9).value
             if isinstance(instrumento_cell, str) and instrumento_cell.startswith('='):
@@ -2352,16 +2367,16 @@ class GalloVisualMerger:
             if 'dolar' in str(moneda_val).lower():
                 ws.cell(row_out, 15, 1)  # Operaciones en dólares: tipo cambio = 1
             else:
-                ws.cell(row_out, 15, f'=SI(P{row_out}=0,1,1/P{row_out})')  # Pesos: 1/ValorUSDDia
+                ws.cell(row_out, 15, f'=SI(P{row_out}=0;1;1/P{row_out})')  # Pesos: 1/ValorUSDDia
             
             # Col P: Valor USD Dia - VLOOKUP con fecha
-            ws.cell(row_out, 16, f'=SI.ERROR(BUSCARV(E{row_out},\'Cotizacion Dolar Historica\'!A:B,2,FALSO),0)')
+            ws.cell(row_out, 16, f'={_si_error(f"BUSCARV(E{row_out};'Cotizacion Dolar Historica'!A:B;2;FALSO)", "0")}')
             
             # Col Q: Gastos
             ws.cell(row_out, 17, trans['gastos'])
             
             # Col R: IVA = SI(Q>0, Q*0.1736, Q*-0.1736) basado en Gastos (col Q)
-            ws.cell(row_out, 18, f'=SI(Q{row_out}>0,Q{row_out}*0.1736,Q{row_out}*-0.1736)')
+            ws.cell(row_out, 18, f'=SI(Q{row_out}>0;Q{row_out}*0,1736;Q{row_out}*-0,1736)')
             
             # Col S: Resultado (vacío)
             ws.cell(row_out, 19, "")
@@ -2371,47 +2386,53 @@ class GalloVisualMerger:
             
             # Col T: Cantidad Stock Inicial - busca en Posicion, si no está devuelve 0 (no fallback necesario)
             if row_out == 2:
-                ws.cell(row_out, 20, f'=SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0))')
+                ws.cell(row_out, 20, f'=SI(IZQUIERDA(A{row_out};5)="gallo";{_si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:I;6;FALSO)", "0")};{_si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:I;6;FALSO)", "0")})')
                 # Col U: Precio Stock USD
                 # Primero intenta VLOOKUP a Posicion / cotización día
                 # Si es 0, usa fallback a PrecioTenenciasIniciales y luego PreciosInicialesEspecies
-                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
-                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_gallo = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:V;19;FALSO)", "0")
+                pos_lookup_visual = _si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:V;19;FALSO)", "0")
                 if use_precio_tenencias:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0))'
+                    fallback_precio = _si_error(
+                        f"BUSCARV(D{row_out};PrecioTenenciasIniciales!A:G;7;FALSO)",
+                        _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
+                    )
                 else:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0)'
+                    fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
                 # Fórmula: SI(P=0,0,SI(pos=0,fallback, pos/P))
-                ws.cell(row_out, 21, f'=SI(P{row_out}=0,0,SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio}/P{row_out},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})/P{row_out}))')
+                ws.cell(row_out, 21, f'=SI(P{row_out}=0;0;SI(SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})=0;{fallback_precio}/P{row_out};SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})/P{row_out}))')
                 explicacion_t = f"T=BUSCARV(D{row_out}→{'PosIni' if is_gallo else 'PosFin'} col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 20, f'=SI(D{row_out}=D{prev},Y{prev},SI(IZQUIERDA(A{row_out},5)="gallo",SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:I,6,FALSO),0),SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:I,6,FALSO),0)))')
+                ws.cell(row_out, 20, f'=SI(D{row_out}=D{prev};Y{prev};SI(IZQUIERDA(A{row_out};5)="gallo";{_si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:I;6;FALSO)", "0")};{_si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:I;6;FALSO)", "0")}))')
                 # Col U: Con fallback
-                pos_lookup_gallo = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Inicial Gallo\'!D:V,19,FALSO),0)'
-                pos_lookup_visual = f'SI.ERROR(BUSCARV(D{row_out},\'Posicion Final Gallo\'!D:V,19,FALSO),0)'
+                pos_lookup_gallo = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:V;19;FALSO)", "0")
+                pos_lookup_visual = _si_error(f"BUSCARV(D{row_out};'Posicion Final Gallo'!D:V;19;FALSO)", "0")
                 if use_precio_tenencias:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PrecioTenenciasIniciales!A:G,7,FALSO),SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0))'
+                    fallback_precio = _si_error(
+                        f"BUSCARV(D{row_out};PrecioTenenciasIniciales!A:G;7;FALSO)",
+                        _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
+                    )
                 else:
-                    fallback_precio = f'SI.ERROR(BUSCARV(D{row_out},PreciosInicialesEspecies!A:J,10,FALSO),0)'
-                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev},Z{prev},SI(P{row_out}=0,0,SI(SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})=0,{fallback_precio}/P{row_out},SI(IZQUIERDA(A{row_out},5)="gallo",{pos_lookup_gallo},{pos_lookup_visual})/P{row_out}))))')
+                    fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
+                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI(SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})=0;{fallback_precio}/P{row_out};SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})/P{row_out}))))')
                 explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: BUSCARV(col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
-            ws.cell(row_out, 22, f'=SI(I{row_out}<0,I{row_out}*U{row_out},0)')
+            ws.cell(row_out, 22, f'=SI(I{row_out}<0;I{row_out}*U{row_out};0)')
             
             # Col W: Neto Calculado = Bruto USD - Gastos
             ws.cell(row_out, 23, f'=M{row_out}-Q{row_out}')
             
             # Col X: Resultado Calculado = |Neto| - |Costo|
-            ws.cell(row_out, 24, f'=SI(V{row_out}<>0,ABS(W{row_out})-ABS(V{row_out}),0)')
+            ws.cell(row_out, 24, f'=SI(V{row_out}<>0;ABS(W{row_out})-ABS(V{row_out});0)')
             
             # Col Y: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 25, f'=I{row_out}+T{row_out}')
             
             # Col Z: Precio Stock Final (promedio ponderado)
             # IMPORTANTE: Usar AC (Precio Nominal) en vez de L (Precio Std USD) para ON/TP/Letras
-            ws.cell(row_out, 26, f'=SI(Y{row_out}=0,0,SI(I{row_out}>0,SI((I{row_out}+T{row_out})=0,0,(I{row_out}*AC{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out})),U{row_out}))')
+            ws.cell(row_out, 26, f'=SI(Y{row_out}=0;0;SI(I{row_out}>0;SI((I{row_out}+T{row_out})=0;0;(I{row_out}*AC{row_out}+T{row_out}*U{row_out})/(I{row_out}+T{row_out}));U{row_out}))')
             
             # Col AA: Explicación T-Z
             cantidad_val = trans['cantidad'] or 0
@@ -2422,7 +2443,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K*O")
             
             # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion",B{row_out})),ESNUMERO(HALLAR("Titulo",B{row_out})),ESNUMERO(HALLAR("Título",B{row_out})),ESNUMERO(HALLAR("Letra",B{row_out}))),L{row_out}/100,L{row_out})')
+            ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));L{row_out}/100;L{row_out})')
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados.
@@ -3067,11 +3088,11 @@ class GalloVisualMerger:
             if codigo:
                 # Col H: Tipo Instrumento - VLOOKUP a EspeciesVisual
                 # EspeciesVisual: Col C=Código, Col R=Tipo Especie (offset 16)
-                ws.cell(row, 8, f'=IFERROR(VLOOKUP(A{row},EspeciesVisual!C:R,16,FALSE),"")')
+                ws.cell(row, 8, f'=SI(ESERROR(BUSCARV(A{row};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(A{row};EspeciesVisual!C:R;16;FALSO))')
                 
                 # Col I: Precio Nominal - dividir por 100 si tipo lo requiere
-                # Usamos SEARCH para detectar si H contiene alguno de los tipos
-                ws.cell(row, 9, f'=IF(OR(ISNUMBER(SEARCH("obligacion",LOWER(H{row}))),ISNUMBER(SEARCH("titulo",LOWER(H{row}))),ISNUMBER(SEARCH("letra",LOWER(H{row})))),G{row}/100,G{row})')
+                # Usamos HALLAR para detectar si H contiene alguno de los tipos
+                ws.cell(row, 9, f'=SI(O(ESNUMERO(HALLAR("obligacion";MINUSC(H{row})));ESNUMERO(HALLAR("titulo";MINUSC(H{row})));ESNUMERO(HALLAR("letra";MINUSC(H{row}))));G{row}/100;G{row})')
                 
                 # Col J: Precio Nominal USD = I / cotización
                 ws.cell(row, 10, f'=I{row}/{cotiz}')
