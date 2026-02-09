@@ -599,6 +599,50 @@ class GalloVisualMerger:
         # 4. Materializar fórmulas en Resultado Ventas USD
         if 'Resultado Ventas USD' in wb.sheetnames:
             self._materialize_resultado_ventas(wb['Resultado Ventas USD'], "USD")
+
+        # 5. Materializar Resumen (usa valores ya calculados)
+        if 'Resumen' in wb.sheetnames:
+            self._materialize_resumen(wb)
+
+    def _materialize_resumen(self, wb: Workbook):
+        """Calcula valores del Resumen a partir de hojas ya materializadas."""
+        ws = wb['Resumen']
+
+        # Ventas (sumas directas de columnas de resultado calculado)
+        ventas_ars = self._sum_column(wb, 'Resultado Ventas ARS', 21)  # U
+        ventas_usd = self._sum_column(wb, 'Resultado Ventas USD', 24)  # X
+
+        # Rentas/Dividendos (col C = categoría, col M = Importe)
+        rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas'])
+        dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
+        rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas'])
+        dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
+
+        # Cauciones por moneda
+        cauciones_int_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Pesos') +
+                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Pesos'))
+        cauciones_cf_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos') +
+                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Pesos'))
+        cauciones_int_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Dolar') +
+                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Dolar'))
+        cauciones_cf_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar') +
+                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Dolar'))
+
+        # Fila ARS (row 2)
+        ws.cell(2, 2, ventas_ars)
+        ws.cell(2, 5, rentas_ars)
+        ws.cell(2, 6, dividendos_ars)
+        ws.cell(2, 10, cauciones_int_ars)
+        ws.cell(2, 11, cauciones_cf_ars)
+        ws.cell(2, 12, (ventas_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (cauciones_int_ars or 0) + (cauciones_cf_ars or 0))
+
+        # Fila USD (row 3)
+        ws.cell(3, 2, ventas_usd)
+        ws.cell(3, 5, rentas_usd)
+        ws.cell(3, 6, dividendos_usd)
+        ws.cell(3, 10, cauciones_int_usd)
+        ws.cell(3, 11, cauciones_cf_usd)
+        ws.cell(3, 12, (ventas_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (cauciones_int_usd or 0) + (cauciones_cf_usd or 0))
     
     def _materialize_posicion(self, ws):
         """
@@ -2800,11 +2844,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 15, importe_original)  # Col O = Importe Original
     
     def _create_resumen(self, wb: Workbook):
-        """Crea hoja Resumen con totales calculados (no fórmulas).
-        
-        Calcula los totales directamente leyendo de las hojas de datos
-        para evitar problemas con fórmulas no evaluadas.
-        """
+        """Crea hoja Resumen con totales por fórmula."""
         ws = wb.create_sheet("Resumen")
         
         headers = ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos',
@@ -2814,57 +2854,33 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Calcular totales ARS
-        ventas_ars = self._calculate_ventas_real(wb, 'Resultado Ventas ARS')
-        rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas', 'AMORTIZACION'])
-        dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
-        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
-        cauciones_int_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Pesos') + 
-                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Pesos'))
-        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
-        cauciones_cf_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos') + 
-                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Pesos'))
-        
-        # Calcular totales USD
-        ventas_usd = self._calculate_ventas_real(wb, 'Resultado Ventas USD')
-        rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas', 'AMORTIZACION'])
-        dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
-        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
-        cauciones_int_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Dolar') +
-                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Dolar'))
-        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
-        cauciones_cf_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar') +
-                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Dolar'))
-        
         # Fila ARS
         ws.cell(2, 1, "ARS")
-        ws.cell(2, 2, ventas_ars)
+        ws.cell(2, 2, "=SUM('Resultado Ventas ARS'!U:U)")
         ws.cell(2, 3, 0)  # FCI
         ws.cell(2, 4, 0)  # Opciones
-        ws.cell(2, 5, rentas_ars)
-        ws.cell(2, 6, dividendos_ars)
+        ws.cell(2, 5, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Rentas\",'Rentas Dividendos ARS'!M:M)")
+        ws.cell(2, 6, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Dividendos\",'Rentas Dividendos ARS'!M:M)")
         ws.cell(2, 7, 0)  # Ef. CPD
         ws.cell(2, 8, 0)  # Pagarés
         ws.cell(2, 9, 0)  # Futuros
-        ws.cell(2, 10, cauciones_int_ars)
-        ws.cell(2, 11, cauciones_cf_ars)
-        total_ars = (ventas_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (cauciones_int_ars or 0) + (cauciones_cf_ars or 0)
-        ws.cell(2, 12, total_ars)
+        ws.cell(2, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!K:K)+SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!K:K)")
+        ws.cell(2, 11, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!N:N)+SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!N:N)")
+        ws.cell(2, 12, "=B2+E2+F2+J2+K2")
         
         # Fila USD
         ws.cell(3, 1, "USD")
-        ws.cell(3, 2, ventas_usd)
+        ws.cell(3, 2, "=SUM('Resultado Ventas USD'!X:X)")
         ws.cell(3, 3, 0)
         ws.cell(3, 4, 0)
-        ws.cell(3, 5, rentas_usd)
-        ws.cell(3, 6, dividendos_usd)
+        ws.cell(3, 5, "=SUMIF('Rentas Dividendos USD'!C:C,\"Rentas\",'Rentas Dividendos USD'!M:M)")
+        ws.cell(3, 6, "=SUMIF('Rentas Dividendos USD'!C:C,\"Dividendos\",'Rentas Dividendos USD'!M:M)")
         ws.cell(3, 7, 0)
         ws.cell(3, 8, 0)
         ws.cell(3, 9, 0)
-        ws.cell(3, 10, cauciones_int_usd)
-        ws.cell(3, 11, cauciones_cf_usd)
-        total_usd = (ventas_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (cauciones_int_usd or 0) + (cauciones_cf_usd or 0)
-        ws.cell(3, 12, total_usd)
+        ws.cell(3, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!K:K)+SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!K:K)")
+        ws.cell(3, 11, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!N:N)+SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!N:N)")
+        ws.cell(3, 12, "=B3+E3+F3+J3+K3")
     
     def _sum_column(self, wb: Workbook, sheet_name: str, col: int, moneda_filter: str = None) -> float:
         """Suma una columna de una hoja, opcionalmente filtrando por moneda."""
