@@ -1187,9 +1187,8 @@ class GalloVisualMerger:
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
             tipo_instrumento = f'=IFERROR(VLOOKUP(D{row_out},EspeciesVisual!C:R,16,FALSE),"")'
             ws.cell(row_out, 21, tipo_instrumento)
-            # Col V (22): Precio Nominal = Precio/100 si Tipo Instrumento contiene Obligacion, Titulo/Título o Letra
-            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",U{row_out})),ISNUMBER(SEARCH("Titulo",U{row_out})),ISNUMBER(SEARCH("Título",U{row_out})),ISNUMBER(SEARCH("Letra",U{row_out}))),P{row_out}/100,P{row_out})'
-            ws.cell(row_out, 22, precio_nominal)
+            # Col V (22): Precio Nominal = Precio a Utilizar (ya viene correcto)
+            ws.cell(row_out, 22, precio_a_utilizar)
             
             row_out += 1
     
@@ -1309,9 +1308,8 @@ class GalloVisualMerger:
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
             tipo_instrumento = f'=IFERROR(VLOOKUP(D{row_out},EspeciesVisual!C:R,16,FALSE),"")'
             ws.cell(row_out, 21, tipo_instrumento)
-            # Col V (22): Precio Nominal = Precio/100 si Tipo Instrumento contiene Obligacion, Titulo/Título o Letra
-            precio_nominal = f'=IF(OR(ISNUMBER(SEARCH("Obligacion",U{row_out})),ISNUMBER(SEARCH("Titulo",U{row_out})),ISNUMBER(SEARCH("Título",U{row_out})),ISNUMBER(SEARCH("Letra",U{row_out}))),P{row_out}/100,P{row_out})'
-            ws.cell(row_out, 22, precio_nominal)
+            # Col V (22): Precio Nominal = Precio a Utilizar (ya viene correcto)
+            ws.cell(row_out, 22, precio_a_utilizar)
             
             row_out += 1
 
