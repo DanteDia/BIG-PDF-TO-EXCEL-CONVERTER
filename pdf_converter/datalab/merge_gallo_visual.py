@@ -2415,7 +2415,7 @@ class GalloVisualMerger:
                     )
                 else:
                     fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
-                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI(SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})=0;{fallback_precio}/P{row_out};SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})/P{row_out}))))')
+                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI(SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})=0;{fallback_precio}/P{row_out};SI(IZQUIERDA(A{row_out};5)="gallo";{pos_lookup_gallo};{pos_lookup_visual})/P{row_out})))')
                 explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: BUSCARV(col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
