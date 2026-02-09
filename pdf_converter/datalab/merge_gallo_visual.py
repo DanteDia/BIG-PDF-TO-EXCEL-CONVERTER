@@ -555,7 +555,7 @@ class GalloVisualMerger:
         Materializa fórmulas en hojas de Posición (Inicial y Final).
         
         Col U (21) = Tipo Instrumento = VLOOKUP a EspeciesVisual
-        Col V (22) = Precio Nominal = IF(es ON/TP/Letras, P/100, P)
+        Col V (22) = Precio Nominal = Precio a Utilizar (col P)
         """
         for row in range(2, ws.max_row + 1):
             cod_especie = ws.cell(row, 4).value  # Col D = Codigo especie
@@ -569,11 +569,8 @@ class GalloVisualMerger:
             # Guardar Tipo Instrumento en Col U (21)
             ws.cell(row, 21, tipo_instrumento)
             
-            # Calcular Precio Nominal usando el tipo de instrumento de EspeciesVisual
-            if self._es_tipo_precio_cada_100(tipo_instrumento):
-                precio_nominal = precio_a_utilizar / 100
-            else:
-                precio_nominal = precio_a_utilizar
+            # Precio Nominal = Precio a Utilizar (ya viene correcto)
+            precio_nominal = precio_a_utilizar
             
             # Guardar Precio Nominal en Col V (22)
             ws.cell(row, 22, precio_nominal)
