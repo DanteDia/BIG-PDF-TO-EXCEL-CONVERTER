@@ -94,8 +94,6 @@ class GalloVisualMerger:
         self._precios_iniciales_by_codigo = {}  # codigo -> {ticker, precio}
         self._precio_tenencias_by_codigo = {}
         self._precio_tenencias_by_ticker = {}
-        self._precio_tenencias_adjusted_by_codigo = {}
-        self._precio_tenencias_adjusted_by_ticker = {}
         self._ratios_cedears_cache = {}
         
         # Load ratio cache first (needed by _build_precio_tenencias_cache)
@@ -185,8 +183,8 @@ class GalloVisualMerger:
     def _build_precio_tenencias_cache(self, ws):
         """Construye cache de PrecioTenenciasIniciales por código y ticker.
         
-        Stores both raw price (importe/cantidad) and adjusted price (raw/ratio for
-        acciones del exterior). Precio a Utilizar uses raw, Precio Nominal uses adjusted.
+        Stores the adjusted price: raw / ratio for acciones del exterior,
+        raw / 1 for everything else.
         """
         headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
 
@@ -227,24 +225,24 @@ class GalloVisualMerger:
                 except Exception:
                     raw_price = 0
 
-            # Compute adjusted price (raw / ratio) for acciones del exterior
-            adjusted_price = raw_price
+            # Ratio: real CEDEAR ratio for acciones del exterior, 1 for everything else
+            ratio = 1
             cod_clean = self._clean_codigo(str(codigo)) if codigo else ''
             if cod_clean and self._is_accion_exterior(cod_clean):
-                ratio = self._get_ratio_for_especie(
+                r = self._get_ratio_for_especie(
                     str(ticker) if ticker else '',
                     str(especie_name) if especie_name else '',
                 )
-                if ratio:
-                    adjusted_price = raw_price / ratio
+                if r:
+                    ratio = r
+
+            adjusted_price = raw_price / ratio
 
             if codigo:
                 codigo_clean = self._clean_codigo(str(codigo))
-                self._precio_tenencias_by_codigo[codigo_clean] = raw_price
-                self._precio_tenencias_adjusted_by_codigo[codigo_clean] = adjusted_price
+                self._precio_tenencias_by_codigo[codigo_clean] = adjusted_price
             if ticker:
-                self._precio_tenencias_by_ticker[str(ticker).strip().upper()] = raw_price
-                self._precio_tenencias_adjusted_by_ticker[str(ticker).strip().upper()] = adjusted_price
+                self._precio_tenencias_by_ticker[str(ticker).strip().upper()] = adjusted_price
 
     def _normalize_ratio_key(self, val: str) -> str:
         if not val:
@@ -544,26 +542,6 @@ class GalloVisualMerger:
 
         return 0
 
-    def _get_precio_tenencia_inicial_adjusted(self, codigo: Optional[str], ticker: str) -> float:
-        """Obtiene precio tenencia inicial AJUSTADO (dividido por ratio para acciones exterior)."""
-        if codigo:
-            codigo_clean = self._clean_codigo(str(codigo))
-            precio = self._precio_tenencias_adjusted_by_codigo.get(codigo_clean, 0)
-            if precio:
-                return precio
-
-        ticker_upper = str(ticker).upper().strip()
-        if ticker_upper:
-            precio = self._precio_tenencias_adjusted_by_ticker.get(ticker_upper, 0)
-            if precio:
-                return precio
-            for ticker_var in self._generate_ticker_variations(ticker_upper):
-                precio = self._precio_tenencias_adjusted_by_ticker.get(ticker_var, 0)
-                if precio:
-                    return precio
-
-        return 0
-
     def _get_codigo_from_ticker(self, ticker: str) -> Optional[int]:
         """Obtiene código de especie desde el ticker usando PreciosInicialesEspecies."""
         ticker_upper = str(ticker).upper().strip()
@@ -777,7 +755,7 @@ class GalloVisualMerger:
         Materializa fórmulas en hojas de Posición (Inicial y Final).
         
         Col U (21) = Tipo Instrumento = VLOOKUP a EspeciesVisual
-        Col V (22) = Precio Nominal = Precio a Utilizar / ratio (for acciones exterior)
+        Col V (22) = Precio Nominal = Precio a Utilizar (col P)
         """
         for row in range(2, ws.max_row + 1):
             cod_especie = ws.cell(row, 4).value  # Col D = Codigo especie
@@ -791,16 +769,8 @@ class GalloVisualMerger:
             # Guardar Tipo Instrumento en Col U (21)
             ws.cell(row, 21, tipo_instrumento)
             
-            # Precio Nominal = adjusted price from cache (divided by ratio for acciones exterior)
-            ticker = ws.cell(row, 2).value
-            precio_adj = self._get_precio_tenencia_inicial_adjusted(
-                str(cod_especie) if cod_especie else None,
-                str(ticker) if ticker else ''
-            )
-            if precio_adj > 0:
-                ws.cell(row, 22, precio_adj)
-            else:
-                ws.cell(row, 22, precio_a_utilizar)
+            # Precio Nominal = Precio a Utilizar (already adjusted via cache)
+            ws.cell(row, 22, precio_a_utilizar)
     
     def _materialize_boletos(self, ws):
         """
@@ -1393,7 +1363,7 @@ class GalloVisualMerger:
                 cotizacion_usd = 1148.93  # Dólar Cable 31/12/2024
                 precio_inicial = precio_inicial * cotizacion_usd
             
-            # Precio a utilizar = PrecioTenenciasIniciales si existe, sino PreciosInicialesEspecies
+            # Precio a utilizar = PrecioTenenciasIniciales (adjusted) si existe, sino PreciosInicialesEspecies
             precio_tenencia = self._get_precio_tenencia_inicial(codigo, ticker)
             if precio_tenencia > 0:
                 precio_a_utilizar = precio_tenencia
@@ -1401,13 +1371,6 @@ class GalloVisualMerger:
             else:
                 precio_a_utilizar = precio_inicial
                 origen_precio = "PreciosInicialesEspecies"
-
-            # Precio Nominal = adjusted price (raw/ratio for acciones exterior, else same as raw)
-            precio_tenencia_adj = self._get_precio_tenencia_inicial_adjusted(codigo, ticker)
-            if precio_tenencia_adj > 0:
-                precio_nominal = precio_tenencia_adj
-            else:
-                precio_nominal = precio_a_utilizar
             
             # Escribir fila
             ws.cell(row_out, 1, tipo_especie)
@@ -1433,8 +1396,8 @@ class GalloVisualMerger:
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
             tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
-            # Col V (22): Precio Nominal = adjusted price (Precio a Utilizar / ratio for acciones exterior)
-            ws.cell(row_out, 22, precio_nominal)
+            # Col V (22): Precio Nominal = Precio a Utilizar (same adjusted value)
+            ws.cell(row_out, 22, precio_a_utilizar)
             
             row_out += 1
     
@@ -3299,23 +3262,21 @@ class GalloVisualMerger:
             # Raw price = importe / cantidad
             raw_price = (importe / cantidad) if cantidad else 0
 
-            # Get ratio for acciones del exterior
-            ratio = 0.0
+            # Ratio: real CEDEAR ratio for acciones del exterior, 1 for everything else
+            ratio = 1
             cod_clean = self._clean_codigo(str(codigo)) if codigo else ''
             if cod_clean and self._is_accion_exterior(cod_clean):
-                especie_name = str(ws_src.cell(row, find_col('especie') or 3).value or '') if find_col('especie') else ''
-                ratio = self._get_ratio_for_especie(
+                especie_name = str(ws_src.cell(row, 3).value or '')
+                r = self._get_ratio_for_especie(
                     str(ticker) if ticker else '',
                     especie_name,
                 )
+                if r:
+                    ratio = r
 
-            # Adjusted price = raw / ratio for acciones exterior, else raw
-            if ratio:
-                adjusted_price = raw_price / ratio
-            else:
-                adjusted_price = raw_price
+            adjusted_price = raw_price / ratio
 
-            ws_dst.cell(row, ratio_col, ratio if ratio else '')
+            ws_dst.cell(row, ratio_col, ratio)
             ws_dst.cell(row, adjusted_col, adjusted_price)
 
     def _add_ratios_cedears_sheet(self, wb: Workbook):
