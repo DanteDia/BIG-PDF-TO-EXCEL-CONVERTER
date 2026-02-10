@@ -94,9 +94,11 @@ class GalloVisualMerger:
         self._precios_iniciales_by_codigo = {}  # codigo -> {ticker, precio}
         self._precio_tenencias_by_codigo = {}
         self._precio_tenencias_by_ticker = {}
+        self._ratios_cedears_cache = {}
         
         # Construir caches
         self._build_caches()
+        self._ratios_cedears_cache = self._load_ratio_cache()
     
     def _load_aux(self, filename: str) -> Workbook:
         """Carga un archivo auxiliar."""
@@ -189,6 +191,8 @@ class GalloVisualMerger:
         col_codigo = find_col('cod')
         col_ticker = find_col('ticker')
         col_precio = find_col('precio tenencia')
+        col_cantidad = find_col('cantidad')
+        col_importe = find_col('importe')
 
         if not col_precio:
             return
@@ -197,17 +201,96 @@ class GalloVisualMerger:
             codigo = ws.cell(row, col_codigo).value if col_codigo else None
             ticker = ws.cell(row, col_ticker).value if col_ticker else None
             precio = ws.cell(row, col_precio).value
+            cantidad = ws.cell(row, col_cantidad).value if col_cantidad else None
+            importe = ws.cell(row, col_importe).value if col_importe else None
 
-            try:
-                precio_val = float(precio) if precio is not None else 0
-            except Exception:
-                precio_val = 0
+            precio_val = 0
+            if cantidad is not None and importe is not None:
+                cantidad_num = self._to_float(cantidad)
+                importe_num = self._to_float(importe)
+                if cantidad_num:
+                    precio_val = importe_num / cantidad_num
+            if not precio_val:
+                try:
+                    precio_val = float(precio) if precio is not None else 0
+                except Exception:
+                    precio_val = 0
 
             if codigo:
                 codigo_clean = self._clean_codigo(str(codigo))
                 self._precio_tenencias_by_codigo[codigo_clean] = precio_val
             if ticker:
                 self._precio_tenencias_by_ticker[str(ticker).strip().upper()] = precio_val
+
+    def _normalize_ratio_key(self, val: str) -> str:
+        if not val:
+            return ""
+        return re.sub(r"[^A-Z0-9]", "", str(val).strip().upper())
+
+    def _load_ratio_cache(self) -> dict:
+        try:
+            aux_path = self.aux_data_dir / 'RatiosCedearsAcciones.xlsx'
+            if not aux_path.exists():
+                return {}
+            wb_ratios = load_workbook(aux_path)
+            ws_ratios = wb_ratios.active
+            cache = {}
+            for r in range(2, ws_ratios.max_row + 1):
+                nombre = ws_ratios.cell(r, 1).value
+                ratio_val = ws_ratios.cell(r, 2).value
+                key = ws_ratios.cell(r, 3).value
+                if ratio_val is None:
+                    continue
+                try:
+                    ratio_num = float(ratio_val)
+                except Exception:
+                    continue
+                if key:
+                    normalized_key = self._normalize_ratio_key(key)
+                    if normalized_key:
+                        cache[normalized_key] = ratio_num
+                if nombre:
+                    nombre_str = str(nombre).strip()
+                    nombre_key = self._normalize_ratio_key(nombre_str.split()[0])
+                    if nombre_key:
+                        cache.setdefault(nombre_key, ratio_num)
+                    # Extract stock ticker from Nombre (format: "Company Name TICKER EXCHANGE")
+                    tokens = nombre_str.split()
+                    if len(tokens) >= 2:
+                        # Second-to-last token is usually the ticker symbol
+                        ticker_candidate = tokens[-2]
+                        ticker_key = self._normalize_ratio_key(ticker_candidate)
+                        if ticker_key and len(ticker_key) <= 6:
+                            cache.setdefault(ticker_key, ratio_num)
+            return cache
+        except Exception:
+            return {}
+
+    def _get_ratio_for_especie(self, ticker: str, especie: str) -> float:
+        if not self._ratios_cedears_cache:
+            return 0.0
+        # Try full ticker first (e.g. "NVDAUS")
+        search_text = f"{ticker} {especie}".strip().upper()
+        key = self._normalize_ratio_key(search_text.split()[0]) if search_text else ""
+        ratio = float(self._ratios_cedears_cache.get(key, 0) or 0)
+        if ratio:
+            return ratio
+        # Try ticker without -US/-D suffix (e.g. "NVDA-US" -> "NVDA")
+        base_ticker = str(ticker).strip().upper().split('-')[0] if ticker else ""
+        if base_ticker:
+            key2 = self._normalize_ratio_key(base_ticker)
+            ratio = float(self._ratios_cedears_cache.get(key2, 0) or 0)
+            if ratio:
+                return ratio
+        return 0.0
+
+    def _is_accion_exterior(self, codigo: str) -> bool:
+        if not codigo:
+            return False
+        cod_clean = self._clean_codigo(codigo)
+        data = self._especies_visual_cache.get(cod_clean, {})
+        return (str(data.get('moneda_emision', '')).strip() == "Dolar Cable (exterior)" and
+                str(data.get('tipo_especie', '')).strip() == "Acciones")
     
     def _clean_codigo(self, codigo) -> str:
         """Limpia código de especie: quita puntos, ceros a izquierda, etc."""
@@ -663,8 +746,17 @@ class GalloVisualMerger:
             # Guardar Tipo Instrumento en Col U (21)
             ws.cell(row, 21, tipo_instrumento)
             
-            # Precio Nominal = Precio a Utilizar (ya viene correcto)
+            # Precio Nominal = Precio a Utilizar / ratio (para acciones del exterior)
             precio_nominal = precio_a_utilizar
+            if cod_clean and self._is_accion_exterior(cod_clean):
+                ticker = ws.cell(row, 2).value   # Col B = Ticker
+                especie = ws.cell(row, 3).value  # Col C = Especie
+                ratio = self._get_ratio_for_especie(
+                    str(ticker) if ticker else '',
+                    str(especie) if especie else '',
+                )
+                if ratio:
+                    precio_nominal = precio_a_utilizar / ratio
             
             # Guardar Precio Nominal en Col V (22)
             ws.cell(row, 22, precio_nominal)
@@ -1293,8 +1385,15 @@ class GalloVisualMerger:
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
             tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
-            # Col V (22): Precio Nominal = Precio a Utilizar (ya viene correcto)
-            ws.cell(row_out, 22, precio_a_utilizar)
+            # Col V (22): Precio Nominal (ajuste CEDEAR si aplica)
+            if codigo and self._is_accion_exterior(str(codigo)):
+                ratio = self._get_ratio_for_especie(ticker, especie)
+                if ratio:
+                    ws.cell(row_out, 22, f"=P{row_out}/{ratio}")
+                else:
+                    ws.cell(row_out, 22, precio_a_utilizar)
+            else:
+                ws.cell(row_out, 22, precio_a_utilizar)
             
             row_out += 1
     

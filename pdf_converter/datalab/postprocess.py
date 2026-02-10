@@ -924,9 +924,17 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
                     if normalized_key:
                         cache[normalized_key] = ratio_num
                 if nombre:
-                    nombre_key = _normalize_ratio_key(str(nombre).strip().split()[0])
+                    nombre_str = str(nombre).strip()
+                    nombre_key = _normalize_ratio_key(nombre_str.split()[0])
                     if nombre_key:
                         cache.setdefault(nombre_key, ratio_num)
+                    # Extract stock ticker from Nombre (format: "Company Name TICKER EXCHANGE")
+                    tokens = nombre_str.split()
+                    if len(tokens) >= 2:
+                        ticker_candidate = tokens[-2]
+                        ticker_key = _normalize_ratio_key(ticker_candidate)
+                        if ticker_key and len(ticker_key) <= 6:
+                            cache.setdefault(ticker_key, ratio_num)
             return cache
         except Exception:
             return {}
@@ -973,6 +981,10 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
                 search_text = f"{ticker} {nombre}".strip().upper()
                 key = _normalize_ratio_key(search_text.split()[0]) if search_text else ""
                 ratio = ratio_cache.get(key)
+                # Try ticker without -US/-D suffix
+                if not ratio and ticker:
+                    base_ticker = str(ticker).strip().upper().split('-')[0]
+                    ratio = ratio_cache.get(_normalize_ratio_key(base_ticker))
                 if ratio and cantidad_num:
                     precio_tenencia = (importe_num / cantidad_num) / ratio
 
@@ -1002,6 +1014,10 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
             search_text = f"{ticker} {nombre}".strip().upper()
             key = _normalize_ratio_key(search_text.split()[0]) if search_text else ""
             ratio = ratio_cache.get(key)
+            # Try ticker without -US/-D suffix
+            if not ratio and ticker:
+                base_ticker = str(ticker).strip().upper().split('-')[0]
+                ratio = ratio_cache.get(_normalize_ratio_key(base_ticker))
             if ratio and cantidad_num:
                 precio_tenencia = (importe_num / cantidad_num) / ratio
 
