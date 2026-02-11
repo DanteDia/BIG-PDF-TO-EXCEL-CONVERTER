@@ -200,6 +200,7 @@ class GalloVisualMerger:
         col_precio = find_col('precio tenencia')
         col_cantidad = find_col('cantidad')
         col_importe = find_col('importe')
+        col_resultado = find_col('resultado')
 
         if not col_precio:
             return
@@ -211,13 +212,21 @@ class GalloVisualMerger:
             precio = ws.cell(row, col_precio).value
             cantidad = ws.cell(row, col_cantidad).value if col_cantidad else None
             importe = ws.cell(row, col_importe).value if col_importe else None
+            resultado = ws.cell(row, col_resultado).value if col_resultado else None
 
             # Compute raw price = importe / cantidad
             raw_price = 0
             if cantidad is not None and importe is not None:
                 cantidad_num = self._to_float(cantidad)
                 importe_num = self._to_float(importe)
-                if cantidad_num:
+                resultado_num = self._to_float(resultado) if resultado is not None else 0
+                # Fix invalid rows: cantidad > 0 but importe <= 0
+                if cantidad_num > 0 and importe_num <= 0:
+                    if importe_num == 0:
+                        raw_price = abs(resultado_num / cantidad_num) if cantidad_num else 0
+                    else:
+                        raw_price = abs(importe_num) / cantidad_num
+                elif cantidad_num:
                     raw_price = importe_num / cantidad_num
             if not raw_price:
                 try:

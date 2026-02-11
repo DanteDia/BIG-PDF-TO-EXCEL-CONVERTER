@@ -971,10 +971,26 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
 
             cantidad_val = ws.cell(row, cantidad_col).value
             importe_val = ws.cell(row, importe_col).value
+            resultado_val = ws.cell(row, resultado_col).value if resultado_col else 0
 
             cantidad_num = parse_cantidad_tenencia(cantidad_val)
             importe_num = to_float(importe_val)
-            precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
+            resultado_num = to_float(resultado_val)
+
+            # Fix invalid rows: cantidad > 0 but importe <= 0
+            if cantidad_num > 0 and importe_num <= 0:
+                if importe_num == 0:
+                    # Use resultado / cantidad as fallback price
+                    precio_tenencia = abs(resultado_num / cantidad_num) if cantidad_num else 0
+                    # Also fix the importe cell to resultado so the sheet is consistent
+                    ws.cell(row, importe_col, value=abs(resultado_num))
+                else:
+                    # Negative importe: flip sign
+                    importe_num = abs(importe_num)
+                    ws.cell(row, importe_col, value=importe_num)
+                    precio_tenencia = importe_num / cantidad_num
+            else:
+                precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
 
             cod_clean = _clean_codigo(cod)
             if cod_clean in acciones_exterior_codigos:
@@ -1006,7 +1022,20 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
 
         cantidad_num = parse_cantidad_tenencia(cantidad_val)
         importe_num = to_float(importe_val)
-        precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
+        resultado_num = to_float(resultado_val)
+
+        # Fix invalid rows: cantidad > 0 but importe <= 0
+        if cantidad_num > 0 and importe_num <= 0:
+            if importe_num == 0:
+                # Use resultado / cantidad as fallback price
+                precio_tenencia = abs(resultado_num / cantidad_num) if cantidad_num else 0
+                importe_num = abs(resultado_num)
+            else:
+                # Negative importe: flip sign
+                importe_num = abs(importe_num)
+                precio_tenencia = importe_num / cantidad_num
+        else:
+            precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
 
         # Ajuste por ratio para Acciones del Exterior (CEDEAR)
         cod_clean = _clean_codigo(cod)
