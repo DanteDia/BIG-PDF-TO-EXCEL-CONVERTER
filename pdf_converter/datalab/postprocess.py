@@ -103,6 +103,11 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
     - "91.886" (no comma) -> 91886 (thousands separator only)
     - "1.234,56" -> 1234.56 (European decimal)
     - "1,215,0000000" -> 1215.0 (mixed format for exchange rates)
+    
+    OCR artifact handling:
+    - "(300.000,000," -> -300000000 (single paren = negative, trailing comma)
+    - "772.000,00," -> 772000000 (garbled thousands: ,00, -> .000)
+    - "650.945.200," -> 650945200 (trailing comma stripped)
     """
     if not value or not isinstance(value, str):
         return None
@@ -114,12 +119,23 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
     if value.startswith('(') and value.endswith(')'):
         value = value[1:-1]
         is_negative = True
+    elif value.startswith('('):
+        # Single opening paren without closing (OCR truncation) -> negative
+        value = value[1:]
+        is_negative = True
     
     # Handle trailing negative
     value = fix_trailing_negative(value)
     if value.startswith('-'):
         is_negative = True
         value = value[1:]
+    
+    # --- OCR artifact cleanup ---
+    # Fix garbled thousands at end: ",00," or ",000," -> ".000"
+    # e.g. "772.000,00," -> "772.000.000", "300.000,000," -> "300.000.000"
+    value = re.sub(r',0{2,3},?$', '.000', value)
+    # Strip any remaining trailing comma or period (OCR truncation)
+    value = value.rstrip(',').rstrip('.')
     
     # Remove thousand separators
     # Detect format based on presence of comma as decimal separator
