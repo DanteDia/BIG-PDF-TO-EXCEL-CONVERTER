@@ -7,7 +7,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment, PatternFill
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
 import re
 
@@ -2326,7 +2326,28 @@ class GalloVisualMerger:
                 'interes': interes if interes else 0,
                 'tipo_cambio': tipo_cambio,
                 'gastos': gastos if gastos else 0,
+                '_idx': boletos_row,
             })
+
+        def _to_sortable_date(value):
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, date):
+                return datetime.combine(value, datetime.min.time())
+            if value is None:
+                return datetime.min
+            try:
+                return datetime.fromisoformat(str(value))
+            except Exception:
+                return datetime.min
+
+        def _sort_key(tx):
+            cod = self._clean_codigo(str(tx.get('cod_instrum'))) if tx.get('cod_instrum') else ''
+            concert = _to_sortable_date(tx.get('concertacion'))
+            liquid = _to_sortable_date(tx.get('liquidacion'))
+            return (cod, concert, liquid, tx.get('_idx', 0))
+
+        transactions.sort(key=_sort_key)
         
         def _si_error(expr: str, fallback: str) -> str:
             return f'SI(ESERROR({expr});{fallback};{expr})'
@@ -2531,7 +2552,28 @@ class GalloVisualMerger:
                 'interes': interes if interes else 0,
                 'tipo_cambio': tipo_cambio,
                 'gastos': gastos if gastos else 0,
+                '_idx': boletos_row,
             })
+
+        def _to_sortable_date(value):
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, date):
+                return datetime.combine(value, datetime.min.time())
+            if value is None:
+                return datetime.min
+            try:
+                return datetime.fromisoformat(str(value))
+            except Exception:
+                return datetime.min
+
+        def _sort_key(tx):
+            cod = self._clean_codigo(str(tx.get('cod_instrum'))) if tx.get('cod_instrum') else ''
+            concert = _to_sortable_date(tx.get('concertacion'))
+            liquid = _to_sortable_date(tx.get('liquidacion'))
+            return (cod, concert, liquid, tx.get('_idx', 0))
+
+        transactions.sort(key=_sort_key)
         
         # Escribir transacciones con VALORES (no fórmulas excepto para cálculos)
         for row_out, trans in enumerate(transactions, start=2):
