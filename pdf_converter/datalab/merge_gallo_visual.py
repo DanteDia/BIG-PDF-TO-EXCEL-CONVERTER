@@ -2354,7 +2354,13 @@ class GalloVisualMerger:
             cod = self._clean_codigo(str(tx.get('cod_instrum'))) if tx.get('cod_instrum') else ''
             concert = _to_sortable_date(tx.get('concertacion'))
             liquid = _to_sortable_date(tx.get('liquidacion'))
-            return (cod, concert, liquid, tx.get('_idx', 0))
+            # Buys (positive qty) before sells (negative qty) on same cod+date
+            try:
+                qty = float(tx.get('cantidad') or 0)
+            except Exception:
+                qty = 0
+            buy_sell = 0 if qty > 0 else 1
+            return (cod, concert, liquid, buy_sell, tx.get('_idx', 0))
 
         transactions.sort(key=_sort_key)
         
@@ -2580,7 +2586,13 @@ class GalloVisualMerger:
             cod = self._clean_codigo(str(tx.get('cod_instrum'))) if tx.get('cod_instrum') else ''
             concert = _to_sortable_date(tx.get('concertacion'))
             liquid = _to_sortable_date(tx.get('liquidacion'))
-            return (cod, concert, liquid, tx.get('_idx', 0))
+            # Buys (positive qty) before sells (negative qty) on same cod+date
+            try:
+                qty = float(tx.get('cantidad') or 0)
+            except Exception:
+                qty = 0
+            buy_sell = 0 if qty > 0 else 1
+            return (cod, concert, liquid, buy_sell, tx.get('_idx', 0))
 
         transactions.sort(key=_sort_key)
         
