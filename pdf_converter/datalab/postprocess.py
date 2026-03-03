@@ -131,11 +131,21 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
         value = value[1:]
     
     # --- OCR artifact cleanup ---
-    # Fix garbled thousands ONLY when OCR leaves a trailing comma artifact:
-    # ",00," or ",000," -> ".000"
-    # e.g. "772.000,00," -> "772.000.000", "300.000,000," -> "300.000.000"
-    # Do NOT touch valid endings like ",00" or ",000" (they are decimals in this format)
-    value = re.sub(r',0{2,3},$', '.000', value)
+    # Fix garbled thousands only for OCR trailing-comma artifacts.
+    # Notes:
+    # - ",00," is consistently a missing thousands block in OCR (e.g. 772.000,00, -> 772.000.000)
+    # - ",000," can be either garbled thousands OR a valid decimal with trailing comma.
+    #   We only expand ",000," when clearly large/negative to avoid inflating rows like
+    #   2.000,000, (should remain 2000.000, not 2.000.000).
+    if re.search(r',00,$', value):
+        value = re.sub(r',00,$', '.000', value)
+    elif re.search(r',000,$', value):
+        integer_part = value[:-5]  # remove trailing ",000,"
+        digits = re.sub(r'\D', '', integer_part)
+        if is_negative or len(digits) >= 6:
+            value = integer_part + '.000'
+        else:
+            value = value[:-1]
     # Strip any remaining trailing comma or period (OCR truncation)
     value = value.rstrip(',').rstrip('.')
     
