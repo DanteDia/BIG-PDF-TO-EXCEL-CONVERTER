@@ -733,31 +733,29 @@ class GalloVisualMerger:
         rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas'])
         dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
 
-        # Cauciones por moneda
-        cauciones_int_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Pesos') +
-                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Pesos'))
-        cauciones_cf_ars = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos') +
-                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Pesos'))
-        cauciones_int_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 11, moneda_filter='Dolar') +
-                            self._sum_column(wb, 'Cauciones Colocadoras', 11, moneda_filter='Dolar'))
-        cauciones_cf_usd = (self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar') +
-                           self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Dolar'))
+        # Cauciones por moneda (nuevo criterio):
+        # J = Cau (Tom): suma costo financiero de Tomadoras
+        # K = Cau (Col): suma costo financiero de Colocadoras
+        cauciones_tom_ars = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Pesos')
+        cauciones_col_ars = self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Pesos')
+        cauciones_tom_usd = self._sum_column(wb, 'Cauciones Tomadoras', 14, moneda_filter='Dolar')
+        cauciones_col_usd = self._sum_column(wb, 'Cauciones Colocadoras', 14, moneda_filter='Dolar')
 
         # Fila ARS (row 2)
         ws.cell(2, 2, ventas_ars)
         ws.cell(2, 5, rentas_ars)
         ws.cell(2, 6, dividendos_ars)
-        ws.cell(2, 10, cauciones_int_ars)
-        ws.cell(2, 11, cauciones_cf_ars)
-        ws.cell(2, 12, (ventas_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (cauciones_int_ars or 0) + (cauciones_cf_ars or 0))
+        ws.cell(2, 10, cauciones_tom_ars)
+        ws.cell(2, 11, cauciones_col_ars)
+        ws.cell(2, 12, (ventas_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (cauciones_tom_ars or 0) + (cauciones_col_ars or 0))
 
         # Fila USD (row 3)
         ws.cell(3, 2, ventas_usd)
         ws.cell(3, 5, rentas_usd)
         ws.cell(3, 6, dividendos_usd)
-        ws.cell(3, 10, cauciones_int_usd)
-        ws.cell(3, 11, cauciones_cf_usd)
-        ws.cell(3, 12, (ventas_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (cauciones_int_usd or 0) + (cauciones_cf_usd or 0))
+        ws.cell(3, 10, cauciones_tom_usd)
+        ws.cell(3, 11, cauciones_col_usd)
+        ws.cell(3, 12, (ventas_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (cauciones_tom_usd or 0) + (cauciones_col_usd or 0))
     
     def _materialize_posicion(self, ws):
         """
@@ -1866,10 +1864,9 @@ class GalloVisualMerger:
                 # Interés según moneda (para interes_devengado)
                 interes = interes_pesos if moneda == "Pesos" else interes_usd
                 interes = float(interes) if interes else 0
-                # Interés siempre positivo
                 interes = abs(interes)
                 
-                # Gastos: tomar el que tenga valor (cualquiera de los dos) - siempre positivo
+                # Gastos: tomar el que tenga valor (cualquiera de los dos)
                 gastos = float(gastos_pesos) if gastos_pesos else (float(gastos_usd) if gastos_usd else 0)
                 gastos = abs(gastos)
                 
@@ -1877,14 +1874,27 @@ class GalloVisualMerger:
                 try:
                     contado_val = float(colocado) if colocado else 0
                     futuro_val = float(al_vencimiento) if al_vencimiento else 0
-                    interes_bruto = futuro_val - contado_val
-                    # Interés bruto siempre positivo
-                    interes_bruto = abs(interes_bruto)
+                    interes_bruto = abs(futuro_val - contado_val)
                 except:
                     interes_bruto = 0
                 
-                # Costo financiero = Interés Devengado(K) - Derechos(M) - Aranceles(L) (siempre positivo)
-                costo_financiero = abs(interes - gastos)
+                # Reglas por tipo de caución:
+                # - TOM: interés/aranceles/derechos negativos (costo),
+                #        CF = Interés Bruto + Aranceles + Derechos (más negativo)
+                # - COL: interés positivo, aranceles/derechos restan,
+                #        CF = Interés Bruto - Aranceles - Derechos
+                if tipo_filtro == "TOM":
+                    interes_bruto = -abs(interes_bruto)
+                    interes_devengado = -abs(interes)
+                    aranceles = -abs(gastos)
+                    derechos = 0
+                    costo_financiero = interes_bruto + aranceles + derechos
+                else:
+                    interes_bruto = abs(interes_bruto)
+                    interes_devengado = abs(interes)
+                    aranceles = abs(gastos)
+                    derechos = 0
+                    costo_financiero = interes_bruto - aranceles - derechos
                 
                 auditoria = f"Origen: Gallo-{gallo_sheet_name}"
                 
@@ -1898,10 +1908,10 @@ class GalloVisualMerger:
                     'futuro': al_vencimiento,
                     'tipo_cambio': tipo_cambio,
                     'tasa': None,  # No disponible en Gallo
-                    'interes_bruto': interes_bruto,  # Calculado: futuro - contado
-                    'interes_devengado': interes,
-                    'aranceles': gastos,
-                    'derechos': None,  # No disponible en Gallo
+                    'interes_bruto': interes_bruto,
+                    'interes_devengado': interes_devengado,
+                    'aranceles': aranceles,
+                    'derechos': derechos,
                     'costo_financiero': costo_financiero,
                     'moneda': moneda,
                     'origen': f"Gallo-{gallo_sheet_name}",
@@ -1912,37 +1922,68 @@ class GalloVisualMerger:
         visual_sheet_name = sheet_name  # "Cauciones Tomadoras" o "Cauciones Colocadoras"
         if visual_sheet_name in self.visual_wb.sheetnames:
             visual_ws = self.visual_wb[visual_sheet_name]
+
+            # Mapeo robusto por encabezados para evitar corrimientos OCR
+            v_headers = [str(visual_ws.cell(1, c).value or '').strip().lower() for c in range(1, visual_ws.max_column + 1)]
+            def _find_col(options, default_idx):
+                for i, h in enumerate(v_headers, start=1):
+                    if any(opt in h for opt in options):
+                        return i
+                return default_idx
+
+            col_fecha = _find_col(['concert'], 1)
+            col_plazo = _find_col(['plaz'], 2)
+            col_liq = _find_col(['liquid'], 3)
+            col_op = _find_col(['operaci'], 4)
+            col_bol = _find_col(['# boleto', 'nro. boleto', 'boleto'], 5)
+            col_contado = _find_col(['contado'], 6)
+            col_futuro = _find_col(['futuro'], 7)
+            col_tc = _find_col(['tipo de cambio', 'tipo cambio'], 8)
+            col_tasa = _find_col(['tasa'], 9)
+            col_ib = _find_col(['interés bruto', 'interes bruto'], 10)
+            col_id = _find_col(['interés deveng', 'interes deveng'], 11)
+            col_ara = _find_col(['arancel'], 12)
+            col_der = _find_col(['derech'], 13)
             
             for row in range(2, visual_ws.max_row + 1):
                 # Estructura esperada de Visual cauciones:
                 # Concertación, Plazo, Liquidación, Operación, Boleto,
                 # Contado, Futuro, Tipo de Cambio, Tasa (%),
                 # Interés Bruto, Interés Devengado, Aranceles, Derechos, Costo Financiero
-                fecha = visual_ws.cell(row, 1).value
-                plazo = visual_ws.cell(row, 2).value
-                liquidacion = visual_ws.cell(row, 3).value
-                operacion = visual_ws.cell(row, 4).value
-                boleto = visual_ws.cell(row, 5).value
-                contado = visual_ws.cell(row, 6).value
-                futuro = visual_ws.cell(row, 7).value
-                tipo_cambio = visual_ws.cell(row, 8).value
-                tasa = visual_ws.cell(row, 9).value
-                interes_bruto = visual_ws.cell(row, 10).value
-                interes_devengado = visual_ws.cell(row, 11).value
-                aranceles = visual_ws.cell(row, 12).value
-                derechos = visual_ws.cell(row, 13).value
-                costo_financiero = visual_ws.cell(row, 14).value
+                fecha = visual_ws.cell(row, col_fecha).value
+                plazo = visual_ws.cell(row, col_plazo).value
+                liquidacion = visual_ws.cell(row, col_liq).value
+                operacion = visual_ws.cell(row, col_op).value
+                boleto = visual_ws.cell(row, col_bol).value
+                contado = visual_ws.cell(row, col_contado).value
+                futuro = visual_ws.cell(row, col_futuro).value
+                tipo_cambio = visual_ws.cell(row, col_tc).value
+                tasa = visual_ws.cell(row, col_tasa).value
+                interes_bruto_raw = visual_ws.cell(row, col_ib).value
+                interes_devengado_raw = visual_ws.cell(row, col_id).value
+                aranceles_raw = visual_ws.cell(row, col_ara).value
+                derechos_raw = visual_ws.cell(row, col_der).value
                 
                 if not operacion:
                     continue
                 
-                # Convertir a valores positivos
-                interes_bruto = abs(float(interes_bruto)) if interes_bruto else 0
-                interes_devengado = abs(float(interes_devengado)) if interes_devengado else 0
-                aranceles = abs(float(aranceles)) if aranceles else 0
-                derechos = abs(float(derechos)) if derechos else 0
-                # Costo Financiero = Interés Devengado(K) - Derechos(M) - Aranceles(L)
-                costo_financiero = abs(interes_devengado - derechos - aranceles)
+                interes_bruto_raw = float(interes_bruto_raw) if isinstance(interes_bruto_raw, (int, float)) else 0
+                interes_devengado_raw = float(interes_devengado_raw) if isinstance(interes_devengado_raw, (int, float)) else 0
+                aranceles_raw = float(aranceles_raw) if isinstance(aranceles_raw, (int, float)) else 0
+                derechos_raw = float(derechos_raw) if isinstance(derechos_raw, (int, float)) else 0
+
+                if tipo_filtro == "TOM":
+                    interes_bruto = -abs(interes_bruto_raw)
+                    interes_devengado = -abs(interes_devengado_raw)
+                    aranceles = -abs(aranceles_raw)
+                    derechos = -abs(derechos_raw)
+                    costo_financiero = interes_bruto + aranceles + derechos
+                else:
+                    interes_bruto = abs(interes_bruto_raw)
+                    interes_devengado = abs(interes_devengado_raw)
+                    aranceles = abs(aranceles_raw)
+                    derechos = abs(derechos_raw)
+                    costo_financiero = interes_bruto - aranceles - derechos
                 
                 # Determinar moneda (asumimos Pesos por default, o buscar en columna si existe)
                 moneda = "Pesos"
@@ -3014,7 +3055,7 @@ class GalloVisualMerger:
         ws = wb.create_sheet("Resumen")
         
         headers = ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos',
-                   'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', 'Total']
+               'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -3030,8 +3071,8 @@ class GalloVisualMerger:
         ws.cell(2, 7, 0)  # Ef. CPD
         ws.cell(2, 8, 0)  # Pagarés
         ws.cell(2, 9, 0)  # Futuros
-        ws.cell(2, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!K:K)+SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!K:K)")
-        ws.cell(2, 11, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!N:N)+SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!N:N)")
+        ws.cell(2, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!N:N)")
+        ws.cell(2, 11, "=SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!N:N)")
         ws.cell(2, 12, "=B2+E2+F2+J2+K2")
         
         # Fila USD
@@ -3044,8 +3085,8 @@ class GalloVisualMerger:
         ws.cell(3, 7, 0)
         ws.cell(3, 8, 0)
         ws.cell(3, 9, 0)
-        ws.cell(3, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!K:K)+SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!K:K)")
-        ws.cell(3, 11, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!N:N)+SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!N:N)")
+        ws.cell(3, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!N:N)")
+        ws.cell(3, 11, "=SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!N:N)")
         ws.cell(3, 12, "=B3+E3+F3+J3+K3")
     
     def _sum_column(self, wb: Workbook, sheet_name: str, col: int, moneda_filter: str = None) -> float:

@@ -825,27 +825,21 @@ class ExcelToPdfExporter:
         rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
         
-        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
-        cau_int_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'interes') +
-                      self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'interes'))
-        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
-        cau_cf_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo') +
-                     self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo'))
+        # Nuevo resumen cauciones:
+        # Cau (Tom) = costo financiero de tomadoras
+        # Cau (Col) = costo financiero de colocadoras
+        cau_tom_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo')
+        cau_col_ars = self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo')
+        cau_tom_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
+        cau_col_usd = self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo')
         
-        # Cau(Int) = suma de Interés Devengado (col K=11) de ambas hojas de cauciones
-        cau_int_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'interes') +
-                      self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'interes'))
-        # Cau(CF) = suma de Costo Financiero (col N=14) de ambas hojas de cauciones
-        cau_cf_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo') +
-                     self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo'))
-        
-        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_int_ars + cau_cf_ars
-        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_int_usd + cau_cf_usd
+        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_tom_ars + cau_col_ars
+        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_tom_usd + cau_col_usd
         
         # Headers
         table_headers = ['Moneda', 'Resultados', '', '', '', '', '', '', '', '', '', 'Total']
         sub_headers = ['', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 
-                      'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', '']
+                  'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (Tom)', 'Cau (Col)', '']
         
         table_data = [table_headers, sub_headers]
         
@@ -860,8 +854,8 @@ class ExcelToPdfExporter:
             self._format_number(0),  # Ef. CPD
             self._format_number(0),  # Pagarés
             self._format_number(0),  # Futuros
-            self._format_number(cau_int_ars),
-            self._format_number(cau_cf_ars),
+            self._format_number(cau_tom_ars),
+            self._format_number(cau_col_ars),
             self._format_number(total_ars),
         ])
         
@@ -876,8 +870,8 @@ class ExcelToPdfExporter:
             self._format_number(0),
             self._format_number(0),
             self._format_number(0),
-            self._format_number(cau_int_usd),
-            self._format_number(cau_cf_usd),
+            self._format_number(cau_tom_usd),
+            self._format_number(cau_col_usd),
             self._format_number(total_usd),
         ])
         
@@ -1188,23 +1182,19 @@ class ExcelToPdfExporter:
         dividendos_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Dividendos'])
         rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
-        cau_int_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'interes') +
-                       self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'interes'))
-        cau_cf_ars = (self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo') +
-                      self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo'))
-        cau_int_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'interes') +
-                       self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'interes'))
-        cau_cf_usd = (self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo') +
-                      self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo'))
-        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_int_ars + cau_cf_ars
-        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_int_usd + cau_cf_usd
+        cau_tom_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo')
+        cau_col_ars = self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo')
+        cau_tom_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
+        cau_col_usd = self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo')
+        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_tom_ars + cau_col_ars
+        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_tom_usd + cau_col_usd
 
         row = write_table(
             row,
-            ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', 'Total'],
+            ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total'],
             [
-                ['ARS', ventas_ars, 0, 0, rentas_ars, dividendos_ars, 0, 0, 0, cau_int_ars, cau_cf_ars, total_ars],
-                ['USD', ventas_usd, 0, 0, rentas_usd, dividendos_usd, 0, 0, 0, cau_int_usd, cau_cf_usd, total_usd],
+                ['ARS', ventas_ars, 0, 0, rentas_ars, dividendos_ars, 0, 0, 0, cau_tom_ars, cau_col_ars, total_ars],
+                ['USD', ventas_usd, 0, 0, rentas_usd, dividendos_usd, 0, 0, 0, cau_tom_usd, cau_col_usd, total_usd],
             ]
         )
         row += 2
