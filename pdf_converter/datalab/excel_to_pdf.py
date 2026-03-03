@@ -720,34 +720,34 @@ class ExcelToPdfExporter:
             elements.append(Spacer(1, 10*mm))
             return elements
         
-        # Columnas a mostrar por nombre
+        # Columnas a mostrar por nombre (con aliases robustos para variaciones OCR/merge)
         col_map = [
-            ('Concertación', 'Concertación', 'date'),
-            ('Plazo', 'Plazo', 'integer'),
-            ('Liquidación', 'Liquidación', 'date'),
-            ('Operación', 'Operación', 'text'),
-            ('# Boleto', '# Boleto', 'integer'),
-            ('Contado', 'Contado', 'number'),
-            ('Futuro', 'Futuro', 'number'),
-            ('Tipo de cambio', 'T.C.', 'number'),
-            ('Tasa (%)', 'Tasa (%)', 'number'),
-            ('Interés Bruto', 'Int. Bruto', 'number'),
-            ('Interés Devengad', 'Int. Dev.', 'number'),
-            ('Aranceles', 'Aranceles', 'number'),
-            ('Derechos', 'Derechos', 'number'),
-            ('Costo financiero', 'Costo Fin.', 'number'),
+            ('Concertación', ['Concertacion'], 'Concertación', 'date'),
+            ('Plazo', ['Plaz'], 'Plazo', 'integer'),
+            ('Liquidación', ['Liquidacion'], 'Liquidación', 'date'),
+            ('Operación', ['Operacion', 'Tipo Operación'], 'Operación', 'text'),
+            ('Boleto', ['# Boleto', 'Nro. Boleto'], '# Boleto', 'integer'),
+            ('Contado', [], 'Contado', 'number'),
+            ('Futuro', [], 'Futuro', 'number'),
+            ('Tipo de Cambio', ['Tipo de cambio', 'Tipo Cambio', 'T.C.'], 'T.C.', 'number'),
+            ('Tasa (%)', ['Tasa', 'Tasa %'], 'Tasa (%)', 'number'),
+            ('Interés Bruto', ['Interes Bruto'], 'Int. Bruto', 'number'),
+            ('Interés Devengado', ['Interés Devengad', 'Interes Devengado', 'Interes Devengad'], 'Int. Dev.', 'number'),
+            ('Aranceles', [], 'Aranceles', 'number'),
+            ('Derechos', [], 'Derechos', 'number'),
+            ('Costo Financiero', ['Costo financiero', 'Costo Fin.'], 'Costo Fin.', 'number'),
         ]
         
         # Obtener índices de columnas
         col_indices = []
-        for col_name, display_name, fmt in col_map:
-            idx = self._get_col_index(headers, col_name)
+        for col_name, alt_names, display_name, fmt in col_map:
+            idx = self._get_col_index(headers, col_name, alt_names)
             col_indices.append((idx, display_name, fmt))
         
         # Índice de moneda para agrupar
         moneda_idx = self._get_col_index(headers, 'Moneda')
         # Índice de costo financiero para totales
-        costo_idx = self._get_col_index(headers, 'Costo financiero')
+        costo_idx = self._get_col_index(headers, 'Costo Financiero', ['Costo financiero', 'Costo Fin.'])
         
         # Agrupar por moneda
         by_moneda = {}
@@ -875,7 +875,8 @@ class ExcelToPdfExporter:
             self._format_number(total_usd),
         ])
         
-        col_widths = [20, 28, 20, 20, 22, 24, 20, 20, 20, 22, 22, 32]
+        # Ajuste de anchos para evitar superposición de Cau(Tom) con Futuros
+        col_widths = [18, 24, 16, 16, 20, 20, 16, 16, 16, 28, 24, 26]
         
         table = Table(table_data, colWidths=[w * mm for w in col_widths])
         
@@ -884,7 +885,7 @@ class ExcelToPdfExporter:
             ('BACKGROUND', (0, 0), (-1, 1), self.HEADER_BG),
             ('TEXTCOLOR', (0, 0), (-1, 1), self.HEADER_TEXT),
             ('FONTNAME', (0, 0), (-1, 1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 1), 8),
+            ('FONTSIZE', (0, 0), (-1, 1), 7),
             ('ALIGN', (0, 0), (-1, 1), 'CENTER'),
             
             # Merge "Resultados" header
@@ -892,7 +893,7 @@ class ExcelToPdfExporter:
             
             # Body
             ('FONTNAME', (0, 2), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 2), (-1, -1), 8),
+            ('FONTSIZE', (0, 2), (-1, -1), 7),
             ('ALIGN', (1, 2), (-1, -1), 'RIGHT'),
             ('ALIGN', (0, 2), (0, -1), 'LEFT'),
             
@@ -901,8 +902,8 @@ class ExcelToPdfExporter:
             ('LINEBELOW', (0, 1), (-1, 1), 1, colors.black),
             
             # Padding
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
         ])
         
         table.setStyle(style)
