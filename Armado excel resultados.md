@@ -120,7 +120,7 @@ HOJA RENTAS DIVIDENDOS ARS
 * Aca van los movimientos de la hoja de rentas y dividendos gallo que tienen en la columna moneda de emision : pesos. El match sigue la misma logica que la distribuicion de columnas que se hizo desde boletos hacia resultado ventas ars y usd. Solo que esta tiene solo 4 columnas numericas: cantidad, tipo de cambio, gastos e importe. Este ultimo es el neto calculado de la hoja origen.   
   
 HOJA RENTAS DIVIDENDOS USD   
-* Misma logica que la hoja rentas dividendos ars pero filtrando por moneda de emision que incluya la palabra dolar en la celdas.   
+* Misma logica que la hoja rentas dividendos ars pero filtrando por moneda de emision que incluya la palabra dolar en la celdas. todo esta en USD confirmado en ambos archivos.    
   
 HOJA RESUMEN   
 * Es la sumatoria de la columna resultado calculado(final) y de importe dividido entre rentas y amortizaciones como rentas y dividendos por cada hoja de resultados. Viendo la hoja de resumen estan las formulas.   
