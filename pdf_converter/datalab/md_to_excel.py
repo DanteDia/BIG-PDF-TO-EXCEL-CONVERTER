@@ -62,6 +62,53 @@ class TableData:
 
 class MarkdownTableParser:
     """Parse markdown tables into structured data."""
+
+    DEFAULT_VISUAL_HEADERS = {
+        "Boletos": ['Tipo de Instrumento', 'Concertación', 'Liquidación', 'Nro. Boleto', 'Moneda',
+                     'Tipo Operación', 'Cod.Instrum', 'Instrumento', 'Cantidad', 'Precio',
+                     'Tipo Cambio', 'Bruto', 'Interés', 'Gastos', 'Neto'],
+        "Resultado Ventas ARS": ['Tipo de Instrumento', 'Instrumento', 'Cod.Instrum', 'Concertación',
+                                  'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad', 'Precio',
+                                  'Bruto', 'Interés', 'Tipo de Cambio', 'Gastos', 'IVA', 'Resultado'],
+        "Resultado Ventas USD": ['Tipo de Instrumento', 'Instrumento', 'Cod.Instrum', 'Concertación',
+                                  'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad', 'Precio',
+                                  'Bruto', 'Interés', 'Tipo de Cambio', 'Gastos', 'IVA', 'Resultado'],
+        "Rentas Dividendos ARS": ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento',
+                                   'Concertación', 'Liquidación', 'Nro. NDC', 'Tipo Operación',
+                                   'Cantidad', 'Moneda', 'Tipo de Cambio', 'Gastos', 'Importe'],
+        "Rentas Dividendos USD": ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento',
+                                   'Concertación', 'Liquidación', 'Nro. NDC', 'Tipo Operación',
+                                   'Cantidad', 'Moneda', 'Tipo de Cambio', 'Gastos', 'Importe'],
+        "Cauciones Tomadoras": ['Concertación', 'Plazo', 'Liquidación', 'Operación', 'Boleto',
+                                 'Contado', 'Futuro', 'Tipo de Cambio', 'Tasa (%)', 'Interés Bruto',
+                                 'Interés Devengado', 'Aranceles', 'Derechos', 'Costo Financiero'],
+        "Cauciones Colocadoras": ['Concertación', 'Plazo', 'Liquidación', 'Operación', 'Boleto',
+                                   'Contado', 'Futuro', 'Tipo de Cambio', 'Tasa (%)', 'Interés Bruto',
+                                   'Interés Devengado', 'Aranceles', 'Derechos', 'Costo Financiero'],
+        "FCI": ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
+                'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
+        "Opciones": ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
+                      'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
+        "Futuros": ['Moneda', 'Instrumento', 'Tipo de Liquidación', 'Total'],
+        "Resumen": ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos Ef.',
+                    'CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', 'Total'],
+        "Posicion Titulos": ['Instrumento', 'Código', 'Ticker', 'Cantidad', 'Importe', 'Moneda'],
+    }
+
+    EXPECTED_VISUAL_SECTIONS = [
+        "Boletos",
+        "Resultado Ventas ARS",
+        "Resultado Ventas USD",
+        "Rentas Dividendos ARS",
+        "Rentas Dividendos USD",
+        "Cauciones Tomadoras",
+        "Cauciones Colocadoras",
+        "FCI",
+        "Opciones",
+        "Futuros",
+        "Resumen",
+        "Posicion Titulos",
+    ]
     
     # Section mappings for sheet names - Gallo format
     GALLO_SECTIONS = {
@@ -80,6 +127,11 @@ class MarkdownTableParser:
     VISUAL_SECTIONS = {
         "BOLETOS": "Boletos",
         "RESULTADO VENTAS": "Resultado Ventas",
+        "RESULTADO DE FUTUROS": "Futuros",
+        "FUTUROS": "Futuros",
+        "OPCIONES": "Opciones",
+        "FCI": "FCI",
+        "FONDOS COMUNES": "FCI",
         "RENTAS Y DIVIDENDOS": "Rentas Dividendos",
         "CAUCIONES TOMADORAS": "Cauciones Tomadoras",
         "CAUCIONES COLOCADORAS": "Cauciones Colocadoras",
@@ -95,6 +147,48 @@ class MarkdownTableParser:
         self.content = markdown_content
         self.tables: dict[str, TableData] = {}
         self.format_type = self._detect_format()
+
+    @staticmethod
+    def _clean_markup_text(value: str) -> str:
+        if value is None:
+            return ""
+        return re.sub(r'<[^>]+>', '', str(value)).strip()
+
+    def _get_default_visual_headers(self, section: str) -> list[str]:
+        return self.DEFAULT_VISUAL_HEADERS.get(section, []).copy()
+
+    def _ensure_expected_visual_tables(self, tables: dict[str, TableData]) -> dict[str, TableData]:
+        for section in self.EXPECTED_VISUAL_SECTIONS:
+            if section not in tables:
+                tables[section] = TableData(
+                    section=section,
+                    headers=self._get_default_visual_headers(section),
+                    rows=[]
+                )
+        return tables
+
+    def _is_visual_boletos_category_header(self, section_name: str) -> bool:
+        clean = self._clean_markup_text(section_name).upper()
+        return clean in {
+            '(SIN DATOS)',
+            'ACCIONES',
+            'TÍTULOS PÚBLICOS',
+            'TITULOS PUBLICOS',
+            'OBLIGACIONES NEGOCIABLES',
+            'CEDEARS',
+            'LETRAS DEL TESORO NAC',
+            'LETRAS DEL TESORO',
+            'TITULOS PUBLICOS',
+        }
+
+    def _infer_visual_currency(self, cells: list[str]) -> Optional[str]:
+        for cell in cells:
+            text = self._clean_markup_text(cell).upper()
+            if 'PESO' in text or text == 'ARS':
+                return 'ARS'
+            if 'DOLAR' in text or 'DÓLAR' in text or text == 'USD':
+                return 'USD'
+        return None
     
     def _detect_format(self) -> str:
         """Detect if this is Gallo or Visual format."""
@@ -107,6 +201,7 @@ class MarkdownTableParser:
         """Parse all tables from the markdown content."""
         if self.format_type == "visual":
             tables = self._parse_visual()
+            tables = self._ensure_expected_visual_tables(tables)
         else:
             tables = self._parse_gallo()
 
@@ -286,13 +381,16 @@ class MarkdownTableParser:
         current_categoria = None  # For Rentas/Dividendos
         
         # Sections that should NOT be split by currency
-        no_currency_sections = {"Resumen", "Posicion Titulos", "Boletos", "PrecioTenenciasIniciales"}
+        no_currency_sections = {"Resumen", "Posicion Titulos", "Boletos", "PrecioTenenciasIniciales", "FCI", "Opciones", "Futuros"}
         
         # Sections that need extra columns
         boletos_section = "Boletos"
         resultado_ventas_section = "Resultado Ventas"
         rentas_dividendos_section = "Rentas Dividendos"
         cauciones_section = "Cauciones"
+        opciones_section = "Opciones"
+        futuros_section = "Futuros"
+        fci_section = "FCI"
         
         for i, line in enumerate(lines):
             line = line.strip()
@@ -300,9 +398,16 @@ class MarkdownTableParser:
             # Detect section headers
             if line.startswith('#'):
                 section_name = line.lstrip('#').strip()
+
+                if current_section == boletos_section and self._is_visual_boletos_category_header(section_name):
+                    current_tipo_instrumento = self._clean_markup_text(section_name)
+                    continue
+
                 matched_section = self._match_section(section_name, self.VISUAL_SECTIONS)
                 
                 if matched_section:
+                    prev_section = current_section
+                    prev_currency = current_currency
                     # Save previous section data
                     if current_section and current_headers and current_rows:
                         sheet_name = current_section
@@ -311,7 +416,7 @@ class MarkdownTableParser:
                         self._save_table(sheet_name, current_headers, current_rows)
                     
                     current_section = matched_section
-                    current_currency = None
+                    current_currency = prev_currency if matched_section == prev_section and matched_section not in no_currency_sections else None
                     current_headers = None
                     current_rows = []
                     in_table = False
@@ -378,6 +483,12 @@ class MarkdownTableParser:
                         elif current_section == rentas_dividendos_section:
                             # Add Instrumento, Cod.Instrum, Categoría, tipo_instrumento at the start
                             current_headers = ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento'] + cells
+                        elif current_section == opciones_section:
+                            current_headers = self._get_default_visual_headers(opciones_section)
+                        elif current_section == futuros_section:
+                            current_headers = self._get_default_visual_headers(futuros_section)
+                        elif current_section == fci_section:
+                            current_headers = self._get_default_visual_headers(fci_section) or cells
                         elif current_section == "Resumen":
                             # For Resumen, use hardcoded headers (OCR often splits them incorrectly)
                             current_headers = ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos Ef.', 
@@ -462,6 +573,17 @@ class MarkdownTableParser:
                                     current_instrumento = instr
                                     current_cod_instrum = cod
                             continue
+                        elif current_section == futuros_section:
+                            clean_upper = clean_text.upper()
+                            if clean_upper in {'ARS', 'USD'}:
+                                current_currency = clean_upper
+                            elif clean_upper.startswith('TOTAL GENERAL'):
+                                current_instrumento = '__TOTAL_GENERAL__'
+                            else:
+                                current_instrumento = clean_text
+                            continue
+                        elif current_section in {opciones_section, fci_section}:
+                            continue
                         else:
                             continue
                     
@@ -478,12 +600,56 @@ class MarkdownTableParser:
                         new_row = [current_tipo_instrumento] + cells
                         current_rows.append(new_row)
                     elif current_section == resultado_ventas_section:
+                        if not current_currency:
+                            current_currency = self._infer_visual_currency(cells)
                         new_row = [current_tipo_instrumento, current_instrumento, current_cod_instrum] + cells
                         current_rows.append(new_row)
                     elif current_section == rentas_dividendos_section:
+                        if not current_currency:
+                            current_currency = self._infer_visual_currency(cells)
                         # Order: Instrumento, Cod.Instrum, Categoría, tipo_instrumento
                         new_row = [current_instrumento, current_cod_instrum, current_categoria, current_tipo_instrumento] + cells
                         current_rows.append(new_row)
+                    elif current_section == opciones_section:
+                        clean_first = self._clean_markup_text(first_cell)
+                        clean_upper = clean_first.upper()
+                        if clean_upper == 'ARS' or clean_upper == 'USD':
+                            continue
+                        if clean_upper.startswith('TOTAL OPCIONES'):
+                            continue
+                        if first_cell.startswith('<b>'):
+                            continue
+                        current_rows.append(cells[:len(current_headers)])
+                    elif current_section == futuros_section:
+                        clean_first = self._clean_markup_text(first_cell)
+                        clean_upper = clean_first.upper()
+                        second_cell = cells[1].strip() if len(cells) > 1 else ''
+                        if clean_upper in {'ARS', 'USD'}:
+                            current_currency = clean_upper
+                            continue
+                        if clean_upper.startswith('TOTAL GENERAL'):
+                            current_instrumento = '__TOTAL_GENERAL__'
+                            continue
+                        if first_cell.startswith('<b>') or (clean_first and not second_cell):
+                            current_instrumento = clean_first
+                            continue
+                        if second_cell and current_instrumento != '__TOTAL_GENERAL__':
+                            current_rows.append([
+                                current_currency or '',
+                                current_instrumento or '',
+                                clean_first,
+                                second_cell,
+                            ])
+                    elif current_section == fci_section:
+                        clean_first = self._clean_markup_text(first_cell)
+                        clean_upper = clean_first.upper()
+                        if clean_upper in {'ARS', 'USD'}:
+                            continue
+                        if clean_upper.startswith('TOTAL'):
+                            continue
+                        if first_cell.startswith('<b>'):
+                            continue
+                        current_rows.append(cells[:len(current_headers)])
                     else:
                         current_rows.append(cells)
         
@@ -702,7 +868,9 @@ def convert_markdown_to_excel(
     
     exporter = ExcelExporter()
     for table in tables.values():
-        if table.rows:  # Only add non-empty tables
+        if format_type == "visual":
+            exporter.add_table(table)
+        elif table.rows:
             exporter.add_table(table)
     
     # Apply post-processing if enabled

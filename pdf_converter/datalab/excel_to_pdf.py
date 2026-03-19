@@ -794,6 +794,103 @@ class ExcelToPdfExporter:
         
         elements.append(Spacer(1, 10*mm))
         return elements
+
+    def _build_generic_sheet_section(self, title: str, sheet_name: str, col_map: List[Tuple[str, List[str], str, str]], col_widths: List[int]) -> List:
+        """Construye una sección genérica para hojas auxiliares tipo tabla."""
+        elements = []
+        elements.append(Paragraph(title, self.styles['SectionTitle']))
+
+        headers, rows = self._read_sheet_data(sheet_name)
+        if not headers:
+            elements.append(Paragraph("Sin operaciones en el período", self.styles['Normal']))
+            elements.append(Spacer(1, 10*mm))
+            return elements
+
+        if not rows:
+            elements.append(Paragraph("Sin operaciones en el período", self.styles['Normal']))
+            elements.append(Spacer(1, 10*mm))
+            return elements
+
+        col_indices = []
+        for col_name, alt_names, display_name, fmt in col_map:
+            idx = self._get_col_index(headers, col_name, alt_names)
+            col_indices.append((idx, display_name, fmt))
+
+        table_headers = [c[1] for c in col_indices]
+        col_formatters = {i: c[2] for i, c in enumerate(col_indices)}
+        table_rows = []
+
+        for row in rows:
+            if not any(v not in (None, '') for v in row):
+                continue
+            table_rows.append([
+                row[idx] if idx >= 0 and idx < len(row) else None
+                for idx, _, _ in col_indices
+            ])
+
+        if not table_rows:
+            elements.append(Paragraph("Sin operaciones en el período", self.styles['Normal']))
+            elements.append(Spacer(1, 10*mm))
+            return elements
+
+        table = self._create_table(table_headers, table_rows, col_widths, col_formatters)
+        if table:
+            elements.append(table)
+        elements.append(Spacer(1, 10*mm))
+        return elements
+
+    def _build_fci_section(self) -> List:
+        return self._build_generic_sheet_section(
+            "FCI",
+            'FCI',
+            [
+                ('Concertación', ['Concertacion'], 'Concertación', 'date'),
+                ('Liquidación', ['Liquidacion'], 'Liquidación', 'date'),
+                ('Moneda', [], 'Moneda', 'text'),
+                ('Tipo Operación', ['Tipo Operacion'], 'Operación', 'text'),
+                ('Cantidad', [], 'Cantidad', 'number'),
+                ('Tipo de Cambio', ['Tipo Cambio'], 'T.C.', 'number'),
+                ('Precio', [], 'Precio', 'number'),
+                ('Bruto', [], 'Bruto', 'number'),
+                ('Gastos', [], 'Gastos', 'number'),
+                ('IVA', [], 'IVA', 'number'),
+                ('Resultado', ['Total'], 'Resultado', 'number'),
+            ],
+            [18, 18, 16, 34, 18, 16, 18, 18, 16, 14, 20]
+        )
+
+    def _build_opciones_section(self) -> List:
+        return self._build_generic_sheet_section(
+            "Opciones",
+            'Opciones',
+            [
+                ('Concertación', ['Concertacion'], 'Concertación', 'date'),
+                ('Liquidación', ['Liquidacion'], 'Liquidación', 'date'),
+                ('Moneda', [], 'Moneda', 'text'),
+                ('Tipo Operación', ['Tipo Operacion'], 'Operación', 'text'),
+                ('Cantidad', [], 'Cantidad', 'number'),
+                ('Tipo de Cambio', ['Tipo Cambio'], 'T.C.', 'number'),
+                ('Precio', [], 'Precio', 'number'),
+                ('Bruto', [], 'Bruto', 'number'),
+                ('Gastos', [], 'Gastos', 'number'),
+                ('IVA', [], 'IVA', 'number'),
+                ('Resultado', ['Total'], 'Resultado', 'number'),
+            ],
+            [18, 18, 16, 34, 18, 16, 18, 18, 16, 14, 20]
+        )
+
+    def _build_futuros_section(self) -> List:
+        return self._build_generic_sheet_section(
+            "Futuros",
+            'Futuros',
+            [
+                ('Moneda', [], 'Moneda', 'text'),
+                ('Instrumento', [], 'Instrumento', 'text'),
+                ('Tipo de Liquidación', ['Tipo de Liquidacion'], 'Tipo de Liquidación', 'text'),
+                ('Total', ['Resultado'], 'Total', 'number'),
+            ],
+            [18, 48, 42, 24]
+        )
     
     def _build_resumen_section(self) -> List:
         """Construye la sección de Resumen.
@@ -824,6 +921,12 @@ class ExcelToPdfExporter:
         
         rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
+        fci_ars = self._calculate_sheet_total_by_moneda('FCI', 'ARS')
+        fci_usd = self._calculate_sheet_total_by_moneda('FCI', 'USD')
+        opciones_ars = self._calculate_sheet_total_by_moneda('Opciones', 'ARS')
+        opciones_usd = self._calculate_sheet_total_by_moneda('Opciones', 'USD')
+        futuros_ars = self._calculate_sheet_total_by_moneda('Futuros', 'ARS')
+        futuros_usd = self._calculate_sheet_total_by_moneda('Futuros', 'USD')
         
         # Nuevo resumen cauciones:
         # Cau (Tom) = costo financiero de tomadoras
@@ -833,8 +936,8 @@ class ExcelToPdfExporter:
         cau_tom_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
         cau_col_usd = self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo')
         
-        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_tom_ars + cau_col_ars
-        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_tom_usd + cau_col_usd
+        total_ars = ventas_ars + fci_ars + opciones_ars + rentas_ars + dividendos_ars + futuros_ars + cau_tom_ars + cau_col_ars
+        total_usd = ventas_usd + fci_usd + opciones_usd + rentas_usd + dividendos_usd + futuros_usd + cau_tom_usd + cau_col_usd
         
         # Headers
         table_headers = ['Moneda', 'Resultados', '', '', '', '', '', '', '', '', '', 'Total']
@@ -847,13 +950,13 @@ class ExcelToPdfExporter:
         table_data.append([
             'ARS',
             self._format_number(ventas_ars),
-            self._format_number(0),  # FCI
-            self._format_number(0),  # Opciones
+            self._format_number(fci_ars),
+            self._format_number(opciones_ars),
             self._format_number(rentas_ars),
             self._format_number(dividendos_ars),
             self._format_number(0),  # Ef. CPD
             self._format_number(0),  # Pagarés
-            self._format_number(0),  # Futuros
+            self._format_number(futuros_ars),
             self._format_number(cau_tom_ars),
             self._format_number(cau_col_ars),
             self._format_number(total_ars),
@@ -863,13 +966,13 @@ class ExcelToPdfExporter:
         table_data.append([
             'USD',
             self._format_number(ventas_usd),
-            self._format_number(0),
-            self._format_number(0),
+            self._format_number(fci_usd),
+            self._format_number(opciones_usd),
             self._format_number(rentas_usd),
             self._format_number(dividendos_usd),
             self._format_number(0),
             self._format_number(0),
-            self._format_number(0),
+            self._format_number(futuros_usd),
             self._format_number(cau_tom_usd),
             self._format_number(cau_col_usd),
             self._format_number(total_usd),
@@ -980,6 +1083,43 @@ class ExcelToPdfExporter:
                     total += val
         
         return total
+
+    def _calculate_sheet_total_by_moneda(self, sheet_name: str, moneda: str) -> float:
+        """Suma la columna Resultado/Total filtrando por la columna Moneda."""
+        if sheet_name not in self.wb.sheetnames:
+            return 0
+
+        ws = self.wb[sheet_name]
+        moneda_col = None
+        value_col = None
+
+        for c in range(1, ws.max_column + 1):
+            header = str(ws.cell(1, c).value or '').strip().lower()
+            if moneda_col is None and 'moneda' in header:
+                moneda_col = c
+            if value_col is None and ('resultado' in header or header == 'total' or ' total' in header):
+                value_col = c
+
+        if value_col is None:
+            return 0
+
+        total = 0
+        for row in range(2, ws.max_row + 1):
+            if moneda_col is not None:
+                moneda_val = str(ws.cell(row, moneda_col).value or '').upper()
+                if moneda == 'ARS' and 'PESO' not in moneda_val and moneda_val != 'ARS':
+                    continue
+                if moneda == 'USD' and not any(token in moneda_val for token in ['DOLAR', 'DÓLAR', 'USD']):
+                    continue
+
+            val = ws.cell(row, value_col).value
+            if val is not None:
+                try:
+                    total += float(val)
+                except (ValueError, TypeError):
+                    pass
+
+        return total
     
     def _build_posicion_titulos_section(self) -> List:
         """Construye la sección de Posición de Títulos."""
@@ -1068,6 +1208,18 @@ class ExcelToPdfExporter:
         
         # Rentas y Dividendos USD
         elements.extend(self._build_rentas_dividendos_section('USD'))
+        elements.append(PageBreak())
+
+        # FCI
+        elements.extend(self._build_fci_section())
+        elements.append(PageBreak())
+
+        # Opciones
+        elements.extend(self._build_opciones_section())
+        elements.append(PageBreak())
+
+        # Futuros
+        elements.extend(self._build_futuros_section())
         elements.append(PageBreak())
         
         # Cauciones Tomadoras

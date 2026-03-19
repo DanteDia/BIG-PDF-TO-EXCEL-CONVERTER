@@ -618,6 +618,9 @@ class GalloVisualMerger:
         self._create_resultado_ventas_usd(wb)
         self._create_rentas_dividendos_ars(wb)
         self._create_rentas_dividendos_usd(wb)
+        self._create_fci(wb)
+        self._create_opciones(wb)
+        self._create_futuros(wb)
         self._create_resumen(wb)
         self._create_posicion_titulos(wb)  # Copia directa de Visual
         
@@ -732,6 +735,12 @@ class GalloVisualMerger:
         dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
         rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas'])
         dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
+        fci_ars = self._sum_sheet_result_by_moneda(wb, 'FCI', 'ARS')
+        fci_usd = self._sum_sheet_result_by_moneda(wb, 'FCI', 'USD')
+        opciones_ars = self._sum_sheet_result_by_moneda(wb, 'Opciones', 'ARS')
+        opciones_usd = self._sum_sheet_result_by_moneda(wb, 'Opciones', 'USD')
+        futuros_ars = self._sum_sheet_result_by_moneda(wb, 'Futuros', 'ARS')
+        futuros_usd = self._sum_sheet_result_by_moneda(wb, 'Futuros', 'USD')
 
         # Cauciones por moneda (nuevo criterio):
         # J = Cau (Tom): suma costo financiero de Tomadoras
@@ -743,19 +752,59 @@ class GalloVisualMerger:
 
         # Fila ARS (row 2)
         ws.cell(2, 2, ventas_ars)
+        ws.cell(2, 3, fci_ars)
+        ws.cell(2, 4, opciones_ars)
         ws.cell(2, 5, rentas_ars)
         ws.cell(2, 6, dividendos_ars)
+        ws.cell(2, 9, futuros_ars)
         ws.cell(2, 10, cauciones_tom_ars)
         ws.cell(2, 11, cauciones_col_ars)
-        ws.cell(2, 12, (ventas_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (cauciones_tom_ars or 0) + (cauciones_col_ars or 0))
+        ws.cell(2, 12, (ventas_ars or 0) + (fci_ars or 0) + (opciones_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (futuros_ars or 0) + (cauciones_tom_ars or 0) + (cauciones_col_ars or 0))
 
         # Fila USD (row 3)
         ws.cell(3, 2, ventas_usd)
+        ws.cell(3, 3, fci_usd)
+        ws.cell(3, 4, opciones_usd)
         ws.cell(3, 5, rentas_usd)
         ws.cell(3, 6, dividendos_usd)
+        ws.cell(3, 9, futuros_usd)
         ws.cell(3, 10, cauciones_tom_usd)
         ws.cell(3, 11, cauciones_col_usd)
-        ws.cell(3, 12, (ventas_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (cauciones_tom_usd or 0) + (cauciones_col_usd or 0))
+        ws.cell(3, 12, (ventas_usd or 0) + (fci_usd or 0) + (opciones_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (futuros_usd or 0) + (cauciones_tom_usd or 0) + (cauciones_col_usd or 0))
+
+    def _find_header_column(self, ws, aliases: List[str]) -> Optional[int]:
+        alias_list = [a.lower() for a in aliases]
+        for c in range(1, ws.max_column + 1):
+            header = str(ws.cell(1, c).value or '').strip().lower()
+            if any(alias == header or alias in header for alias in alias_list):
+                return c
+        return None
+
+    def _sum_sheet_result_by_moneda(self, wb: Workbook, sheet_name: str, moneda: str) -> float:
+        if sheet_name not in wb.sheetnames:
+            return 0
+
+        ws = wb[sheet_name]
+        moneda_col = self._find_header_column(ws, ['moneda'])
+        value_col = self._find_header_column(ws, ['resultado', 'total'])
+
+        if not value_col:
+            return 0
+
+        total = 0
+        for row in range(2, ws.max_row + 1):
+            if moneda_col:
+                moneda_val = str(ws.cell(row, moneda_col).value or '').upper()
+                if moneda == 'ARS' and 'PESO' not in moneda_val and moneda_val != 'ARS':
+                    continue
+                if moneda == 'USD' and not any(token in moneda_val for token in ['DOLAR', 'DÓLAR', 'USD']):
+                    continue
+
+            val = ws.cell(row, value_col).value
+            if val is not None and isinstance(val, (int, float)):
+                total += float(val)
+
+        return total
     
     def _materialize_posicion(self, ws):
         """
@@ -1848,8 +1897,8 @@ class GalloVisualMerger:
                 if tipo_filtro not in operacion_upper:
                     continue
                 
-                # Filtrar solo 2025
-                if not self._is_year_2025(fecha):
+                # Filtrar solo 2025 usando vencimiento (col E del origen visual del usuario)
+                if not self._is_year_2025(vencimiento):
                     continue
                 
                 # Parsear fechas
@@ -3064,30 +3113,30 @@ class GalloVisualMerger:
         # Fila ARS
         ws.cell(2, 1, "ARS")
         ws.cell(2, 2, "=SUM('Resultado Ventas ARS'!U:U)")
-        ws.cell(2, 3, 0)  # FCI
-        ws.cell(2, 4, 0)  # Opciones
+        ws.cell(2, 3, '=SUMIF(FCI!C:C,"*Peso*",FCI!K:K)+SUMIF(FCI!C:C,"ARS",FCI!K:K)')
+        ws.cell(2, 4, '=SUMIF(Opciones!C:C,"*Peso*",Opciones!K:K)+SUMIF(Opciones!C:C,"ARS",Opciones!K:K)')
         ws.cell(2, 5, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Rentas\",'Rentas Dividendos ARS'!M:M)")
         ws.cell(2, 6, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Dividendos\",'Rentas Dividendos ARS'!M:M)")
         ws.cell(2, 7, 0)  # Ef. CPD
         ws.cell(2, 8, 0)  # Pagarés
-        ws.cell(2, 9, 0)  # Futuros
+        ws.cell(2, 9, '=SUMIF(Futuros!A:A,"ARS",Futuros!D:D)+SUMIF(Futuros!A:A,"*Peso*",Futuros!D:D)')
         ws.cell(2, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!N:N)")
         ws.cell(2, 11, "=SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!N:N)")
-        ws.cell(2, 12, "=B2+E2+F2+J2+K2")
+        ws.cell(2, 12, "=B2+C2+D2+E2+F2+I2+J2+K2")
         
         # Fila USD
         ws.cell(3, 1, "USD")
         ws.cell(3, 2, "=SUM('Resultado Ventas USD'!X:X)")
-        ws.cell(3, 3, 0)
-        ws.cell(3, 4, 0)
+        ws.cell(3, 3, '=SUMIF(FCI!C:C,"*Dolar*",FCI!K:K)+SUMIF(FCI!C:C,"USD",FCI!K:K)')
+        ws.cell(3, 4, '=SUMIF(Opciones!C:C,"*Dolar*",Opciones!K:K)+SUMIF(Opciones!C:C,"USD",Opciones!K:K)')
         ws.cell(3, 5, "=SUMIF('Rentas Dividendos USD'!C:C,\"Rentas\",'Rentas Dividendos USD'!M:M)")
         ws.cell(3, 6, "=SUMIF('Rentas Dividendos USD'!C:C,\"Dividendos\",'Rentas Dividendos USD'!M:M)")
         ws.cell(3, 7, 0)
         ws.cell(3, 8, 0)
-        ws.cell(3, 9, 0)
+        ws.cell(3, 9, '=SUMIF(Futuros!A:A,"USD",Futuros!D:D)+SUMIF(Futuros!A:A,"*Dolar*",Futuros!D:D)')
         ws.cell(3, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!N:N)")
         ws.cell(3, 11, "=SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!N:N)")
-        ws.cell(3, 12, "=B3+E3+F3+J3+K3")
+        ws.cell(3, 12, "=B3+C3+D3+E3+F3+I3+J3+K3")
     
     def _sum_column(self, wb: Workbook, sheet_name: str, col: int, moneda_filter: str = None) -> float:
         """Suma una columna de una hoja, opcionalmente filtrando por moneda."""
@@ -3214,6 +3263,54 @@ class GalloVisualMerger:
                     stock_cantidad += cantidad  # Resta porque cantidad es negativa
         
         return resultado_total
+
+    def _create_visual_passthrough_sheet(self, wb: Workbook, output_name: str, source_candidates: List[str], default_headers: List[str]):
+        """Copia una hoja de Visual al merge o crea una vacía si no existe."""
+        ws = wb.create_sheet(output_name)
+
+        src_name = next((name for name in source_candidates if name in self.visual_wb.sheetnames), None)
+        if src_name:
+            src_ws = self.visual_wb[src_name]
+            max_col = src_ws.max_column
+            for col in range(1, max_col + 1):
+                header = src_ws.cell(1, col).value
+                ws.cell(1, col, header)
+                ws.cell(1, col).font = Font(bold=True)
+
+            for row in range(2, src_ws.max_row + 1):
+                for col in range(1, max_col + 1):
+                    ws.cell(row, col, src_ws.cell(row, col).value)
+            return
+
+        for col, header in enumerate(default_headers, 1):
+            ws.cell(1, col, header)
+            ws.cell(1, col).font = Font(bold=True)
+
+    def _create_fci(self, wb: Workbook):
+        self._create_visual_passthrough_sheet(
+            wb,
+            "FCI",
+            ["FCI"],
+            ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
+             'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado']
+        )
+
+    def _create_opciones(self, wb: Workbook):
+        self._create_visual_passthrough_sheet(
+            wb,
+            "Opciones",
+            ["Opciones"],
+            ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
+             'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado']
+        )
+
+    def _create_futuros(self, wb: Workbook):
+        self._create_visual_passthrough_sheet(
+            wb,
+            "Futuros",
+            ["Futuros", "Resultado de Futuros"],
+            ['Moneda', 'Instrumento', 'Tipo de Liquidación', 'Total']
+        )
 
     def _create_posicion_titulos(self, wb: Workbook):
         """Crea hoja Posicion Titulos con datos de Visual (fuente principal).

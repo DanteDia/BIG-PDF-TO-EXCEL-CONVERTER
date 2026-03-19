@@ -146,6 +146,11 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
             value = integer_part + '.000'
         else:
             value = value[:-1]
+    elif re.match(r'^\d{1,3}(\.\d{3})+,\d{3}$', value):
+        integer_part, decimal_group = value.rsplit(',', 1)
+        digits = re.sub(r'\D', '', integer_part)
+        if is_negative or len(digits) >= 6:
+            value = integer_part + '.' + decimal_group
     # Strip any remaining trailing comma or period (OCR truncation)
     value = value.rstrip(',').rstrip('.')
     
@@ -807,6 +812,31 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
     console.print(f"  [dim]Processing {sheet_name}...[/dim]")
     
     headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+
+    if sheet_name.lower() == 'boletos':
+        tipo_col = None
+        oper_col = None
+        for idx, header in enumerate(headers, start=1):
+            header_str = str(header or '').strip().lower()
+            if header_str == 'tipo de instrumento':
+                tipo_col = idx
+            elif header_str == 'tipo operación' or header_str == 'tipo operacion':
+                oper_col = idx
+
+        if tipo_col and oper_col:
+            for row in range(2, ws.max_row + 1):
+                tipo_val = str(ws.cell(row, tipo_col).value or '').strip()
+                oper_val = str(ws.cell(row, oper_col).value or '').strip().lower()
+                needs_reclass = (not tipo_val) or ('sin datos' in tipo_val.lower())
+                if not needs_reclass or not oper_val:
+                    continue
+
+                if 'futuro' in oper_val:
+                    ws.cell(row, tipo_col).value = 'Futuros'
+                elif 'opción' in oper_val or 'opcion' in oper_val:
+                    ws.cell(row, tipo_col).value = 'Opciones'
+                elif 'ejercicio' in oper_val:
+                    ws.cell(row, tipo_col).value = 'Acciones'
     
     for row in range(2, ws.max_row + 1):
         for col in range(1, ws.max_column + 1):
