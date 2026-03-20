@@ -62,6 +62,22 @@ class GalloVisualMerger:
         text = " ".join(str(v or "") for v in values).lower()
         return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
 
+    def _classify_rentas_currency(self, moneda, moneda_emision=None) -> str:
+        """Clasifica una renta/dividendo en ARS o USD priorizando la moneda efectiva de la fila."""
+        moneda_text = str(moneda or '').strip().lower()
+        if 'peso' in moneda_text or moneda_text == 'ars':
+            return 'ARS'
+        if any(token in moneda_text for token in ['dolar', 'dólar', 'usd', 'mep', 'cable']):
+            return 'USD'
+
+        moneda_emision_text = str(moneda_emision or '').strip().lower()
+        if 'peso' in moneda_emision_text or moneda_emision_text == 'ars':
+            return 'ARS'
+        if any(token in moneda_emision_text for token in ['dolar', 'dólar', 'usd', 'mep', 'cable']):
+            return 'USD'
+
+        return 'ARS'
+
     def _is_visual_origin(self, origen: str) -> bool:
         """Indica si la fila proviene de Visual."""
         return 'visual' in str(origen or '').lower()
@@ -804,10 +820,10 @@ class GalloVisualMerger:
         ventas_usd = self._sum_column(wb, 'Resultado Ventas USD', 24)  # X
 
         # Rentas/Dividendos (col C = categoría, col M = Importe)
-        rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas'])
-        dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'])
-        rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas'])
-        dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'])
+        rentas_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Rentas'], moneda_filter='ARS')
+        dividendos_ars = self._sum_by_tipo(wb, 'Rentas Dividendos ARS', 3, 13, ['Dividendos'], moneda_filter='ARS')
+        rentas_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Rentas'], moneda_filter='USD')
+        dividendos_usd = self._sum_by_tipo(wb, 'Rentas Dividendos USD', 3, 13, ['Dividendos'], moneda_filter='USD')
         fci_ars = self._sum_sheet_result_by_moneda(wb, 'FCI', 'ARS')
         fci_usd = self._sum_sheet_result_by_moneda(wb, 'FCI', 'USD')
         opciones_ars = self._sum_sheet_result_by_moneda(wb, 'Opciones', 'ARS')
@@ -2938,9 +2954,10 @@ class GalloVisualMerger:
             # Obtener moneda_emision del cache
             especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
             moneda_emision = especie_data.get('moneda_emision')
+            moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
             
-            # Filtrar solo Pesos
-            if moneda_emision != "Pesos":
+            # Filtrar solo ARS usando la moneda efectiva de la fila como verdad principal
+            if self._classify_rentas_currency(moneda, moneda_emision) != 'ARS':
                 continue
             
             tipo_operacion = rentas_ws.cell(rentas_row, 6).value  # Col F
@@ -2962,8 +2979,6 @@ class GalloVisualMerger:
             liquidacion = rentas_ws.cell(rentas_row, 3).value  # Col C
             nro_ndc = rentas_ws.cell(rentas_row, 4).value  # Col D
             cantidad = rentas_ws.cell(rentas_row, 10).value  # Col J
-            moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
-            
             # Calcular gastos = Costo (P) + Gastos (O)
             costo = rentas_ws.cell(rentas_row, 16).value or 0  # Col P
             gastos_orig = rentas_ws.cell(rentas_row, 15).value or 0  # Col O
@@ -2980,6 +2995,8 @@ class GalloVisualMerger:
                 importe = 0
             
             origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+            if moneda_emision and self._classify_rentas_currency(moneda, moneda_emision) == 'ARS' and 'dolar' in str(moneda_emision).lower():
+                origen = f"{origen} | ALERTA: MONEDA_EFECTIVA_ARS"
             
             # Tipo de Cambio ARS: 1 si Pesos, Valor USD del día si contiene dolar
             moneda_str = str(moneda).lower() if moneda else ""
@@ -3086,9 +3103,10 @@ class GalloVisualMerger:
             # Obtener moneda_emision del cache
             especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
             moneda_emision = especie_data.get('moneda_emision')
+            moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
             
-            # Filtrar solo Dolar
-            if not moneda_emision or 'dolar' not in str(moneda_emision).lower():
+            # Filtrar solo USD usando la moneda efectiva de la fila como verdad principal
+            if self._classify_rentas_currency(moneda, moneda_emision) != 'USD':
                 continue
             
             tipo_operacion = rentas_ws.cell(rentas_row, 6).value  # Col F
@@ -3110,8 +3128,6 @@ class GalloVisualMerger:
             liquidacion = rentas_ws.cell(rentas_row, 3).value  # Col C
             nro_ndc = rentas_ws.cell(rentas_row, 4).value  # Col D
             cantidad = rentas_ws.cell(rentas_row, 10).value  # Col J
-            moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
-            
             # Calcular gastos = Costo (P) + Gastos (O)
             costo = rentas_ws.cell(rentas_row, 16).value or 0  # Col P
             gastos_orig = rentas_ws.cell(rentas_row, 15).value or 0  # Col O
@@ -3128,6 +3144,8 @@ class GalloVisualMerger:
                 importe = 0
             
             origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+            if moneda and ('peso' in str(moneda).lower()):
+                origen = f"{origen} | ALERTA: MONEDA_EFECTIVA_PESOS_EN_USD"
             
             # Tipo de Cambio USD: 1 si contiene dolar/cable, Valor USD del día si Pesos
             moneda_str = str(moneda).lower() if moneda else ""
@@ -3219,8 +3237,8 @@ class GalloVisualMerger:
         ws.cell(2, 2, "=SUM('Resultado Ventas ARS'!U:U)")
         ws.cell(2, 3, '=SUMIF(FCI!C:C,"*Peso*",FCI!K:K)+SUMIF(FCI!C:C,"ARS",FCI!K:K)')
         ws.cell(2, 4, '=SUMIF(Opciones!C:C,"*Peso*",Opciones!K:K)+SUMIF(Opciones!C:C,"ARS",Opciones!K:K)')
-        ws.cell(2, 5, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Rentas\",'Rentas Dividendos ARS'!M:M)")
-        ws.cell(2, 6, "=SUMIF('Rentas Dividendos ARS'!C:C,\"Dividendos\",'Rentas Dividendos ARS'!M:M)")
+        ws.cell(2, 5, "=SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Rentas\";'Rentas Dividendos ARS'!J:J;\"*Peso*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Rentas\";'Rentas Dividendos ARS'!J:J;\"ARS\")")
+        ws.cell(2, 6, "=SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Dividendos\";'Rentas Dividendos ARS'!J:J;\"*Peso*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Dividendos\";'Rentas Dividendos ARS'!J:J;\"ARS\")")
         ws.cell(2, 7, 0)  # Ef. CPD
         ws.cell(2, 8, 0)  # Pagarés
         ws.cell(2, 9, '=SUMIF(Futuros!A:A,"ARS",Futuros!D:D)+SUMIF(Futuros!A:A,"*Peso*",Futuros!D:D)')
@@ -3233,8 +3251,8 @@ class GalloVisualMerger:
         ws.cell(3, 2, "=SUM('Resultado Ventas USD'!X:X)")
         ws.cell(3, 3, '=SUMIF(FCI!C:C,"*Dolar*",FCI!K:K)+SUMIF(FCI!C:C,"USD",FCI!K:K)')
         ws.cell(3, 4, '=SUMIF(Opciones!C:C,"*Dolar*",Opciones!K:K)+SUMIF(Opciones!C:C,"USD",Opciones!K:K)')
-        ws.cell(3, 5, "=SUMIF('Rentas Dividendos USD'!C:C,\"Rentas\",'Rentas Dividendos USD'!M:M)")
-        ws.cell(3, 6, "=SUMIF('Rentas Dividendos USD'!C:C,\"Dividendos\",'Rentas Dividendos USD'!M:M)")
+        ws.cell(3, 5, "=SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Rentas\";'Rentas Dividendos USD'!J:J;\"*Dolar*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Rentas\";'Rentas Dividendos USD'!J:J;\"USD\")")
+        ws.cell(3, 6, "=SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Dividendos\";'Rentas Dividendos USD'!J:J;\"*Dolar*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Dividendos\";'Rentas Dividendos USD'!J:J;\"USD\")")
         ws.cell(3, 7, 0)
         ws.cell(3, 8, 0)
         ws.cell(3, 9, '=SUMIF(Futuros!A:A,"USD",Futuros!D:D)+SUMIF(Futuros!A:A,"*Dolar*",Futuros!D:D)')
@@ -3272,17 +3290,32 @@ class GalloVisualMerger:
         
         return total
     
-    def _sum_by_tipo(self, wb: Workbook, sheet_name: str, tipo_col: int, value_col: int, tipos: list) -> float:
+    def _sum_by_tipo(self, wb: Workbook, sheet_name: str, tipo_col: int, value_col: int, tipos: list, moneda_filter: str = None) -> float:
         """Suma valores de una columna filtrando por tipo."""
         if sheet_name not in wb.sheetnames:
             return 0
         
         ws = wb[sheet_name]
         total = 0
+        moneda_col = None
+        if moneda_filter:
+            for c in range(1, ws.max_column + 1):
+                header = ws.cell(1, c).value
+                if header and 'moneda' in str(header).lower():
+                    moneda_col = c
+                    break
         
         for row in range(2, ws.max_row + 1):
             tipo = str(ws.cell(row, tipo_col).value or '').upper()
             if any(t.upper() in tipo for t in tipos):
+                if moneda_filter and moneda_col:
+                    moneda_val = str(ws.cell(row, moneda_col).value or '').lower()
+                    if moneda_filter.lower() == 'ars':
+                        if 'peso' not in moneda_val and moneda_val != 'ars':
+                            continue
+                    elif moneda_filter.lower() == 'usd':
+                        if 'dolar' not in moneda_val and moneda_val != 'usd':
+                            continue
                 val = ws.cell(row, value_col).value
                 if val and isinstance(val, (int, float)):
                     total += val
