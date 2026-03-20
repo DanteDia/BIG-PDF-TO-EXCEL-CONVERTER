@@ -4,6 +4,13 @@ from openpyxl import load_workbook
 ROOT = Path(r"c:/Users/xarodan/Downloads/Resumen Impositivo- Branch dots.OCR")
 
 
+def _latest_existing(*paths: Path):
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
 def _load(path: Path):
     return load_workbook(path, data_only=True)
 
@@ -25,6 +32,12 @@ def check_currency_rows(workbook_path: Path, sheet_name: str, expected: str):
         if not ok:
             bad_rows.append(row)
     return _sheet_rows(ws), bad_rows
+
+
+def count_non_empty_rows(workbook_path: Path, sheet_name: str):
+    wb = _load(workbook_path)
+    ws = wb[sheet_name]
+    return sum(1 for row in range(2, ws.max_row + 1) if any(ws.cell(row, col).value not in (None, '') for col in range(1, ws.max_column + 1)))
 
 
 def check_resultado_vs_bruto(workbook_path: Path, sheet_name: str = 'Resultado Ventas ARS'):
@@ -52,13 +65,21 @@ def resumen_rows(workbook_path: Path):
 
 
 def main():
-    glozman = ROOT / 'Ejemplo Glozman error moneda pesos en seccion USD' / '12766_GLOZMAN_DARIO_EDMUNDO_Resumen_Impositivo_FIXED.xlsx'
-    salvo = ROOT / '11896_SALVO_MARTIN_Resumen_Impositivo_REGRESSION.xlsx'
+    glozman = _latest_existing(
+        ROOT / 'Ejemplo Glozman error moneda pesos en seccion USD' / '12766_GLOZMAN_DARIO_EDMUNDO_Resumen_Impositivo_FIXED_v2.xlsx',
+        ROOT / 'Ejemplo Glozman error moneda pesos en seccion USD' / '12766_GLOZMAN_DARIO_EDMUNDO_Resumen_Impositivo_FIXED.xlsx',
+    )
+    salvo = _latest_existing(
+        ROOT / '11896_SALVO_MARTIN_Resumen_Impositivo_REGRESSION_v2.xlsx',
+        ROOT / '11896_SALVO_MARTIN_Resumen_Impositivo_REGRESSION.xlsx',
+    )
 
     print('=== GLOZMAN ===')
     if glozman.exists():
-        rows, bad = check_currency_rows(glozman, 'Rentas Dividendos USD', 'USD')
-        print(f'Rentas Dividendos USD rows: {rows}')
+        ars_rows = count_non_empty_rows(glozman, 'Rentas Dividendos ARS')
+        usd_rows, bad = check_currency_rows(glozman, 'Rentas Dividendos USD', 'USD')
+        print(f'Rentas Dividendos ARS rows: {ars_rows}')
+        print(f'Rentas Dividendos USD rows: {usd_rows}')
         print(f'Bad USD currency rows: {bad}')
         for row in resumen_rows(glozman):
             print(row)
@@ -67,8 +88,10 @@ def main():
 
     print('\n=== SALVO ===')
     if salvo.exists():
-        rows, bad = check_currency_rows(salvo, 'Rentas Dividendos USD', 'USD')
-        print(f'Rentas Dividendos USD rows: {rows}')
+        ars_rows = count_non_empty_rows(salvo, 'Rentas Dividendos ARS')
+        usd_rows, bad = check_currency_rows(salvo, 'Rentas Dividendos USD', 'USD')
+        print(f'Rentas Dividendos ARS rows: {ars_rows}')
+        print(f'Rentas Dividendos USD rows: {usd_rows}')
         print(f'Bad USD currency rows: {bad}')
         print(f'Resultado>Bruto rows: {check_resultado_vs_bruto(salvo)}')
         for row in resumen_rows(salvo):

@@ -624,17 +624,17 @@ class ExcelToPdfExporter:
             idx = self._get_col_index(headers, col_name)
             col_indices.append((idx, display_name, fmt))
         
+        # Confiar en la hoja ya dividida ARS/USD por el merger.
+        non_empty_rows = [row for row in rows if any(v not in (None, '') for v in row)]
+
         # Índices para agrupar
         cat_idx = self._get_col_index(headers, 'Categoría')
         tipo_instr_idx = self._get_col_index(headers, 'tipo_instrumento', ['Tipo de Instrumento'])
         instr_idx = self._get_col_index(headers, 'Instrumento')
-        moneda_idx = self._get_col_index(headers, 'Moneda')
         
         # Agrupar por categoría y tipo_instrumento
         by_cat = {}
-        for row in rows:
-            if not self._row_matches_currency_section(row, moneda_idx, moneda):
-                continue
+        for row in non_empty_rows:
             cat = row[cat_idx] if cat_idx >= 0 and cat_idx < len(row) else "Otros"
             cat = cat if cat else "Otros"
             tipo_instr = row[tipo_instr_idx] if tipo_instr_idx >= 0 and tipo_instr_idx < len(row) else "Sin tipo"
@@ -654,6 +654,7 @@ class ExcelToPdfExporter:
         cat_order = ['Rentas', 'Dividendos', 'Otros']
         sorted_cats = sorted(by_cat.keys(), 
                            key=lambda x: cat_order.index(x) if x in cat_order else 999)
+        rendered_row_count = 0
         
         for cat in sorted_cats:
             elements.append(Paragraph(cat, self.styles['SubsectionTitle']))
@@ -663,6 +664,7 @@ class ExcelToPdfExporter:
                 
                 for instr in sorted(by_cat[cat][tipo_instr].keys()):
                     instr_rows = by_cat[cat][tipo_instr][instr]
+                    rendered_row_count += len(instr_rows)
                     
                     # Nombre del instrumento
                     elements.append(Paragraph(f"    {instr}", 
@@ -688,21 +690,15 @@ class ExcelToPdfExporter:
                     if table:
                         elements.append(table)
                     elements.append(Spacer(1, 2*mm))
+
+        if rendered_row_count != len(non_empty_rows):
+            raise ValueError(
+                f"La sección {sheet_name} perdió operaciones al renderizar el PDF: "
+                f"excel={len(non_empty_rows)} pdf={rendered_row_count}"
+            )
         
         elements.append(Spacer(1, 10*mm))
         return elements
-
-    def _row_matches_currency_section(self, row: List, moneda_idx: int, moneda: str) -> bool:
-        """Valida que una fila pertenezca realmente a la sección ARS/USD según la moneda visible."""
-        if moneda_idx < 0 or moneda_idx >= len(row):
-            return True
-
-        moneda_val = str(row[moneda_idx] or '').lower()
-        if moneda == 'USD':
-            return 'dolar' in moneda_val or 'usd' in moneda_val
-        if moneda == 'ARS':
-            return 'peso' in moneda_val or moneda_val == 'ars'
-        return True
     
     def _build_cauciones_section(self, tipo: str = "tomadoras") -> List:
         """
@@ -1070,21 +1066,11 @@ class ExcelToPdfExporter:
         
         ws = self.wb[sheet_name]
         total = 0
-        headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
-        moneda_idx = self._get_col_index(headers, 'Moneda')
-        moneda_col = moneda_idx + 1 if moneda_idx >= 0 else None
-        moneda_target = 'USD' if 'USD' in sheet_name else 'ARS'
         
         # Columnas: C=Tipo(3), M=Importe Neto(13)
         for row in range(2, ws.max_row + 1):
             tipo = str(ws.cell(row, 3).value or '').upper()
             if any(t.upper() in tipo for t in tipos):
-                if moneda_col:
-                    moneda_val = str(ws.cell(row, moneda_col).value or '').lower()
-                    if moneda_target == 'USD' and 'dolar' not in moneda_val and moneda_val != 'usd':
-                        continue
-                    if moneda_target == 'ARS' and 'peso' not in moneda_val and moneda_val != 'ars':
-                        continue
                 importe = ws.cell(row, 13).value
                 if importe and isinstance(importe, (int, float)):
                     total += importe
