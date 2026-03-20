@@ -230,12 +230,15 @@ class ExcelToPdfExporter:
         Returns:
             Tuple de (headers, rows)
         """
-        # 1. Usar datos de Datalab parser (recomendado - tiene valores de fórmulas)
+        # 1. Priorizar el workbook abierto: refleja el merge final completo
+        if sheet_name in self.wb.sheetnames:
+            return self._read_from_openpyxl(sheet_name)
+
+        # 2. Fallback a Datalab solo si la hoja no existe en el workbook
         if self._datalab_reader:
             return self._read_from_datalab(sheet_name)
-        
-        # 2. Fallback a openpyxl (puede tener valores None para fórmulas)
-        return self._read_from_openpyxl(sheet_name)
+
+        return [], []
     
     def _read_from_datalab(self, sheet_name: str) -> Tuple[List[str], List[List[Any]]]:
         """Lee datos desde el parser Datalab."""
@@ -449,6 +452,8 @@ class ExcelToPdfExporter:
         # Agrupar por tipo de instrumento
         by_tipo = {}
         for row in rows:
+            if not any(v not in (None, '') for v in row):
+                continue
             tipo = row[tipo_idx] if tipo_idx >= 0 and tipo_idx < len(row) else "Otros"
             tipo = tipo if tipo else "Otros"
             if tipo not in by_tipo:
@@ -864,6 +869,7 @@ class ExcelToPdfExporter:
             "Opciones",
             'Opciones',
             [
+                ('Instrumento', [], 'Instrumento', 'text'),
                 ('Concertación', ['Concertacion'], 'Concertación', 'date'),
                 ('Liquidación', ['Liquidacion'], 'Liquidación', 'date'),
                 ('Moneda', [], 'Moneda', 'text'),
@@ -876,7 +882,7 @@ class ExcelToPdfExporter:
                 ('IVA', [], 'IVA', 'number'),
                 ('Resultado', ['Total'], 'Resultado', 'number'),
             ],
-            [18, 18, 16, 34, 18, 16, 18, 18, 16, 14, 20]
+            [34, 18, 18, 16, 34, 18, 16, 18, 18, 16, 14, 20]
         )
 
     def _build_futuros_section(self) -> List:
