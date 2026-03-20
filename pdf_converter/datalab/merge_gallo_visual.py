@@ -62,12 +62,41 @@ class GalloVisualMerger:
         text = " ".join(str(v or "") for v in values).lower()
         return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
 
-    def _normalize_nominal_price(self, price, tipo_instrumento: str) -> float:
+    def _is_visual_origin(self, origen: str) -> bool:
+        """Indica si la fila proviene de Visual."""
+        return 'visual' in str(origen or '').lower()
+
+    def _uses_visual_ars_raw_nominal(self, price, tipo_instrumento: str, origen: str = "", moneda_tipo: str = "") -> bool:
+        """Determina si una fila Visual ARS ya viene con precio nominal y no debe dividirse por 100."""
+        if moneda_tipo != "ARS" or not self._is_visual_origin(origen):
+            return False
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return False
+
+        price_num = abs(self._to_float(price))
+        # En Visual ARS los títulos/letras problemáticos vienen ya nominales (~1.xx).
+        # Si además están en magnitud baja, no aplicar ajuste /100.
+        return 0 < price_num < 20
+
+    def _normalize_nominal_price(self, price, tipo_instrumento: str, origen: str = "", moneda_tipo: str = "") -> float:
         """Normaliza un precio a base nominal consistente para cálculos de stock/resultados."""
         price_num = self._to_float(price)
+        if self._uses_visual_ars_raw_nominal(price_num, tipo_instrumento, origen, moneda_tipo):
+            return price_num
         if self._es_tipo_precio_cada_100(tipo_instrumento):
             return price_num / 100
         return price_num
+
+    def _build_ars_nominal_formula(self, row_out: int) -> str:
+        """Fórmula de Precio Nominal para Resultado Ventas ARS con excepción Visual ARS ya nominal."""
+        tipo_checks = (
+            f'O(ESNUMERO(HALLAR("OBLIGACION";MAYUSC(B{row_out})));'
+            f'ESNUMERO(HALLAR("TITULO";MAYUSC(B{row_out})));'
+            f'ESNUMERO(HALLAR("TÍTULO";MAYUSC(B{row_out})));'
+            f'ESNUMERO(HALLAR("LETRA";MAYUSC(B{row_out}))))'
+        )
+        visual_raw_nominal = f'Y(ESNUMERO(HALLAR("VISUAL";MAYUSC(A{row_out})));{tipo_checks};ABS(J{row_out})<20)'
+        return f'=SI({visual_raw_nominal};J{row_out};SI({tipo_checks};J{row_out}/100;J{row_out}))'
 
     def _build_resultado_currency_overrides(self, boletos_ws) -> Dict[str, str]:
         """Asigna una única hoja ARS/USD por código para mantener íntegro el running stock."""
@@ -1076,7 +1105,7 @@ class GalloVisualMerger:
                 gastos = self._to_float(ws.cell(row, 14).value)   # Col N = Gastos
                 
                 # Calcular Precio Nominal
-                precio_nominal = self._normalize_nominal_price(precio_original, tipo_instrumento)
+                precio_nominal = self._normalize_nominal_price(precio_original, tipo_instrumento, origen, moneda_tipo)
                 current_nominal_price = precio_nominal
                 ws.cell(row, col_precio_nominal, precio_nominal)
                 
@@ -1259,8 +1288,13 @@ class GalloVisualMerger:
             warnings = []
             if bruto_ref and abs(resultado) > abs(bruto_ref):
                 warnings.append('RESULTADO>BRUTO')
-            if es_precio_cada_100 and current_nominal_price and precio_stock_inicial and abs(precio_stock_inicial / current_nominal_price) > 20:
-                warnings.append('ESCALA_PRECIO_STOCK')
+            if current_nominal_price and precio_stock_inicial:
+                current_abs = abs(current_nominal_price)
+                stock_abs = abs(precio_stock_inicial)
+                min_price = min(current_abs, stock_abs)
+                max_price = max(current_abs, stock_abs)
+                if min_price > 0 and (max_price / min_price) > 20:
+                    warnings.append('ESCALA_PRECIO_STOCK')
             if warnings:
                 prev_audit = str(ws.cell(row, audit_col).value or '').strip()
                 suffix = ' | ALERTA: ' + ', '.join(warnings)
@@ -2629,8 +2663,9 @@ class GalloVisualMerger:
             # Col Z: Chequeado
             ws.cell(row_out, 26, f"Origen: {trans['origen']} | Cod: {cod}")
             
-            # Col AA (27): Precio Nominal = Precio/100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 27, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));J{row_out}/100;J{row_out})')
+            # Col AA (27): Precio Nominal. En Visual ARS de renta fija/títulos ya nominales,
+            # usar J directo; en el resto mantener /100 para instrumentos cotizados cada 100.
+            ws.cell(row_out, 27, self._build_ars_nominal_formula(row_out))
     
     def _create_resultado_ventas_usd(self, wb: Workbook):
         """Crea hoja Resultado Ventas USD con transacciones de Boletos filtradas por Dolar."""
