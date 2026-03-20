@@ -882,7 +882,7 @@ class ExcelToPdfExporter:
                 ('IVA', [], 'IVA', 'number'),
                 ('Resultado', ['Total'], 'Resultado', 'number'),
             ],
-            [34, 18, 18, 16, 34, 18, 16, 18, 18, 16, 14, 20]
+            [36, 18, 18, 16, 46, 18, 16, 18, 18, 16, 14, 20]
         )
 
     def _build_futuros_section(self) -> List:
@@ -984,8 +984,8 @@ class ExcelToPdfExporter:
             self._format_number(total_usd),
         ])
         
-        # Ajuste de anchos para evitar superposición de Cau(Tom) con Futuros
-        col_widths = [18, 24, 16, 16, 20, 20, 16, 16, 16, 28, 24, 26]
+        # Anchos algo más holgados para evitar que números grandes invadan la columna siguiente
+        col_widths = [20, 28, 18, 18, 22, 22, 18, 18, 18, 30, 26, 30]
         
         table = Table(table_data, colWidths=[w * mm for w in col_widths])
         
