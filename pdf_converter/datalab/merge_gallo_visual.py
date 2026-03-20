@@ -56,6 +56,50 @@ class GalloVisualMerger:
         tipo_lower = tipo_instrumento.lower().strip()
         # Usar matching parcial para los términos de la lista
         return any(t in tipo_lower for t in self.TIPOS_PRECIO_CADA_100)
+
+    def _is_dollar_related(self, *values) -> bool:
+        """Determina si los textos refieren a operatoria/activos dolarizados."""
+        text = " ".join(str(v or "") for v in values).lower()
+        return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
+
+    def _normalize_nominal_price(self, price, tipo_instrumento: str) -> float:
+        """Normaliza un precio a base nominal consistente para cálculos de stock/resultados."""
+        price_num = self._to_float(price)
+        if self._es_tipo_precio_cada_100(tipo_instrumento):
+            return price_num / 100
+        return price_num
+
+    def _build_resultado_currency_overrides(self, boletos_ws) -> Dict[str, str]:
+        """Asigna una única hoja ARS/USD por código para mantener íntegro el running stock."""
+        grouped: Dict[str, Dict[str, bool]] = {}
+
+        for row in range(2, boletos_ws.max_row + 1):
+            cod_instrum = boletos_ws.cell(row, 7).value
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
+            if not cod_clean:
+                continue
+
+            especie_data = self._especies_visual_cache.get(cod_clean, {})
+            moneda = boletos_ws.cell(row, 5).value
+            tipo_operacion = boletos_ws.cell(row, 6).value
+            moneda_emision = especie_data.get('moneda_emision')
+
+            state = grouped.setdefault(cod_clean, {'usd': False, 'ars': False})
+            if self._is_dollar_related(moneda, tipo_operacion, moneda_emision):
+                state['usd'] = True
+
+            moneda_text = str(moneda or '').lower()
+            tipo_text = str(tipo_operacion or '').lower()
+            if 'peso' in moneda_text or moneda_text == 'ars' or 'peso' in tipo_text or str(moneda_emision or '').strip() == 'Pesos':
+                state['ars'] = True
+
+        overrides: Dict[str, str] = {}
+        for cod_clean, state in grouped.items():
+            if state['usd']:
+                overrides[cod_clean] = 'USD'
+            elif state['ars']:
+                overrides[cod_clean] = 'ARS'
+        return overrides
     
     def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None, precio_tenencias_path: str = None):
         """
@@ -825,8 +869,8 @@ class GalloVisualMerger:
             # Guardar Tipo Instrumento en Col U (21)
             ws.cell(row, 21, tipo_instrumento)
             
-            # Precio Nominal = Precio a Utilizar (already adjusted via cache)
-            ws.cell(row, 22, precio_a_utilizar)
+            # Precio Nominal = Precio a Utilizar normalizado para tipos cotizados cada 100
+            ws.cell(row, 22, self._normalize_nominal_price(precio_a_utilizar, tipo_instrumento))
     
     def _materialize_boletos(self, ws):
         """
@@ -1032,7 +1076,8 @@ class GalloVisualMerger:
                 gastos = self._to_float(ws.cell(row, 14).value)   # Col N = Gastos
                 
                 # Calcular Precio Nominal
-                precio_nominal = precio_original / 100 if es_precio_cada_100 else precio_original
+                precio_nominal = self._normalize_nominal_price(precio_original, tipo_instrumento)
+                current_nominal_price = precio_nominal
                 ws.cell(row, col_precio_nominal, precio_nominal)
                 
                 # Dividir gastos e intereses por 100 para ON/TP/Letras
@@ -1092,10 +1137,8 @@ class GalloVisualMerger:
                 # 1. Primero convertir precio_std_original a USD: precio_std_original * tipo_cambio
                 # 2. Si es ON/TP/Letras, dividir por 100
                 precio_std_usd_raw = precio_std_original * tipo_cambio
-                if es_precio_cada_100:
-                    precio_std_usd = precio_std_usd_raw / 100
-                else:
-                    precio_std_usd = precio_std_usd_raw
+                precio_std_usd = self._normalize_nominal_price(precio_std_usd_raw, tipo_instrumento)
+                current_nominal_price = precio_std_usd
                 
                 # Materializar L (Precio Std USD) - Este es el precio por 100VN en USD
                 ws.cell(row, 12, precio_std_usd_raw)
@@ -1210,6 +1253,18 @@ class GalloVisualMerger:
                 ws.cell(row, col_stock_fin_price, precio_stock_final)
             else:
                 ws.cell(row, col_stock_fin_price, 0)
+
+            bruto_ref = bruto if moneda_tipo == "ARS" else bruto_usd
+            audit_col = 26 if moneda_tipo == "ARS" else 28
+            warnings = []
+            if bruto_ref and abs(resultado) > abs(bruto_ref):
+                warnings.append('RESULTADO>BRUTO')
+            if es_precio_cada_100 and current_nominal_price and precio_stock_inicial and abs(precio_stock_inicial / current_nominal_price) > 20:
+                warnings.append('ESCALA_PRECIO_STOCK')
+            if warnings:
+                prev_audit = str(ws.cell(row, audit_col).value or '').strip()
+                suffix = ' | ALERTA: ' + ', '.join(warnings)
+                ws.cell(row, audit_col, f'{prev_audit}{suffix}' if prev_audit else suffix.lstrip(' |'))
             
             # Actualizar código previo para siguiente iteración
             prev_cod_instrum = cod_instrum
@@ -1452,8 +1507,8 @@ class GalloVisualMerger:
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
             tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
-            # Col V (22): Precio Nominal = Precio a Utilizar (same adjusted value)
-            ws.cell(row_out, 22, precio_a_utilizar)
+            # Col V (22): Precio Nominal = Precio a Utilizar normalizado
+            ws.cell(row_out, 22, self._normalize_nominal_price(precio_a_utilizar, self._vlookup_especies_visual(codigo, 16) if codigo else ''))
             
             row_out += 1
     
@@ -1573,8 +1628,8 @@ class GalloVisualMerger:
             # Col U (21): Tipo Instrumento = VLOOKUP desde EspeciesVisual usando Codigo especie (col D)
             tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
-            # Col V (22): Precio Nominal = Precio a Utilizar (ya viene correcto)
-            ws.cell(row_out, 22, precio_a_utilizar)
+            # Col V (22): Precio Nominal = Precio a Utilizar normalizado
+            ws.cell(row_out, 22, self._normalize_nominal_price(precio_a_utilizar, self._vlookup_especies_visual(codigo, 16) if codigo else ''))
             
             row_out += 1
 
@@ -2358,6 +2413,7 @@ class GalloVisualMerger:
         
         # Recolectar transacciones de Boletos con moneda == "Pesos"
         boletos_ws = wb['Boletos']
+        currency_overrides = self._build_resultado_currency_overrides(boletos_ws)
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
@@ -2369,8 +2425,16 @@ class GalloVisualMerger:
             especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
             moneda_emision = especie_data.get('moneda_emision')
             
-            # Filtrar solo Pesos
-            if moneda_emision != "Pesos":
+            moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
+            tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
+            route_currency = currency_overrides.get(cod_clean)
+
+            # Mantener todos los legs del mismo instrumento en una sola hoja
+            if route_currency == 'USD':
+                continue
+            if route_currency is None and self._is_dollar_related(moneda, tipo_operacion, moneda_emision):
+                continue
+            if route_currency is None and moneda_emision != "Pesos":
                 continue
             
             # Extraer valores REALES (no fórmulas)
@@ -2393,8 +2457,6 @@ class GalloVisualMerger:
             # Valores directos
             concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B - fecha
             liquidacion = boletos_ws.cell(boletos_row, 3).value  # Col C
-            moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
-            tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
             cantidad = boletos_ws.cell(boletos_row, 10).value  # Col J
             precio = boletos_ws.cell(boletos_row, 11).value  # Col K
             interes = boletos_ws.cell(boletos_row, 14).value  # Col N
@@ -2594,6 +2656,7 @@ class GalloVisualMerger:
 
         # Recolectar transacciones de Boletos con moneda contiene "Dolar"
         boletos_ws = wb['Boletos']
+        currency_overrides = self._build_resultado_currency_overrides(boletos_ws)
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
@@ -2605,8 +2668,14 @@ class GalloVisualMerger:
             especie_data = self._especies_visual_cache.get(cod_clean, {}) if cod_clean else {}
             moneda_emision = especie_data.get('moneda_emision')
             
-            # Filtrar solo Dolar (MEP, Cable)
-            if not moneda_emision or 'dolar' not in str(moneda_emision).lower():
+            moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
+            tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
+            route_currency = currency_overrides.get(cod_clean)
+
+            # Filtrar operaciones dolarizadas manteniendo juntos todos los legs del código
+            if route_currency == 'ARS':
+                continue
+            if route_currency is None and not self._is_dollar_related(moneda, tipo_operacion, moneda_emision):
                 continue
             
             # Extraer valores REALES (no fórmulas)
@@ -2629,8 +2698,6 @@ class GalloVisualMerger:
             # Valores directos
             concertacion = boletos_ws.cell(boletos_row, 2).value  # Col B - fecha
             liquidacion = boletos_ws.cell(boletos_row, 3).value  # Col C
-            moneda = boletos_ws.cell(boletos_row, 5).value  # Col E
-            tipo_operacion = boletos_ws.cell(boletos_row, 6).value  # Col F
             cantidad = boletos_ws.cell(boletos_row, 10).value  # Col J
             precio = boletos_ws.cell(boletos_row, 11).value  # Col K
             interes = boletos_ws.cell(boletos_row, 14).value  # Col N
@@ -2691,6 +2758,8 @@ class GalloVisualMerger:
             origen_val = trans['origen'] or ""
             is_visual = 'visual' in origen_val.lower() if origen_val else False
             is_gallo = 'gallo' in origen_val.lower() if origen_val else False
+            tipo_instrumento_val = str(trans['tipo_instrumento'] or '')
+            requires_standard_100 = is_visual and self._es_tipo_precio_cada_100(tipo_instrumento_val)
             
             # Columnas A-J: Valores directos
             ws.cell(row_out, 1, trans['origen'])
@@ -2707,7 +2776,7 @@ class GalloVisualMerger:
             # Col K: Precio Standarizado (x100 si Visual)
             precio_val = trans['precio'] or 0
             try:
-                precio_std = float(precio_val) * 100 if is_visual else float(precio_val)
+                precio_std = float(precio_val) * 100 if requires_standard_100 else float(precio_val)
             except:
                 precio_std = 0
             ws.cell(row_out, 11, precio_std)  # Valor, no fórmula
@@ -2798,7 +2867,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 27, explicacion_full)
             
             # Col AB: Auditoría
-            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if is_visual else 'raw'} | L=K*O")
+            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if requires_standard_100 else 'raw'} | L=K*O")
             
             # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
             ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));L{row_out}/100;L{row_out})')
@@ -3300,7 +3369,7 @@ class GalloVisualMerger:
             wb,
             "Opciones",
             ["Opciones"],
-            ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
+            ['Instrumento', 'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
              'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado']
         )
 

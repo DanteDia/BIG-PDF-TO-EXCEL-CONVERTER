@@ -193,6 +193,80 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
         return None
 
 
+def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
+    """Genera candidatos para cantidades OCR ambiguas como 150.000,000 o 166.000,0000."""
+    if not value or not isinstance(value, str):
+        return []
+
+    raw = value.strip()
+    is_negative = raw.startswith('(') or raw.endswith('-') or raw.startswith('-')
+    cleaned = raw.strip('()')
+    cleaned = fix_trailing_negative(cleaned)
+    cleaned = cleaned.lstrip('-').rstrip(',').rstrip('.')
+
+    match = re.match(r'^(\d{1,3}(?:\.\d{3})*),(\d{3,4})$', cleaned)
+    if not match:
+        return []
+
+    decimal_group = match.group(2)
+    if set(decimal_group) != {'0'}:
+        return []
+
+    integer_digits = match.group(1).replace('.', '')
+    sign = -1 if is_negative else 1
+
+    candidates = []
+    try:
+        candidates.append(sign * float(f"{integer_digits}.0"))
+    except Exception:
+        pass
+    try:
+        candidates.append(sign * float(integer_digits + decimal_group))
+    except Exception:
+        pass
+
+    # De-duplicate preserving order
+    deduped = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _choose_best_boletos_quantity(raw_qty: str, parsed_qty, precio, bruto):
+    """Elige la cantidad que mejor cierra con Precio x Cantidad ~= Bruto."""
+    candidates = _parse_ambiguous_quantity_candidates(raw_qty)
+    if not candidates:
+        return parsed_qty
+
+    try:
+        precio_num = abs(float(precio or 0))
+        bruto_num = abs(float(bruto or 0))
+    except Exception:
+        return parsed_qty
+
+    if precio_num == 0 or bruto_num == 0:
+        return parsed_qty
+
+    best_candidate = parsed_qty
+    best_error = None
+
+    parsed_candidates = []
+    try:
+        parsed_candidates.append(float(parsed_qty))
+    except Exception:
+        pass
+
+    for candidate in candidates + parsed_candidates:
+        expected_bruto = abs(candidate) * precio_num
+        error = abs(expected_bruto - bruto_num)
+        if best_error is None or error < best_error:
+            best_error = error
+            best_candidate = candidate
+
+    return int(best_candidate) if float(best_candidate).is_integer() else best_candidate
+
+
 def replace_null_with_zero(ws: Worksheet) -> None:
     """
     Replace null values with 0 in numeric columns.
@@ -812,6 +886,19 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
     console.print(f"  [dim]Processing {sheet_name}...[/dim]")
     
     headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+    headers_lower = [str(h or '').strip().lower() for h in headers]
+
+    cantidad_col = None
+    precio_col = None
+    bruto_col = None
+    if sheet_name.lower() == 'boletos':
+        for idx, header_str in enumerate(headers_lower, start=1):
+            if header_str == 'cantidad':
+                cantidad_col = idx
+            elif header_str == 'precio':
+                precio_col = idx
+            elif header_str == 'bruto':
+                bruto_col = idx
 
     if sheet_name.lower() == 'boletos':
         tipo_col = None
@@ -839,6 +926,7 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                     ws.cell(row, tipo_col).value = 'Acciones'
     
     for row in range(2, ws.max_row + 1):
+        raw_row_values = [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row, col)
             header = headers[col - 1] if col <= len(headers) else None
@@ -866,6 +954,15 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                 # Replace None with 0 in numeric columns
                 if is_numeric_column(header_str) or is_integer_column(header_str):
                     cell.value = 0
+
+        if cantidad_col and precio_col and bruto_col:
+            raw_qty = raw_row_values[cantidad_col - 1]
+            if isinstance(raw_qty, str):
+                qty_value = ws.cell(row, cantidad_col).value
+                precio_value = ws.cell(row, precio_col).value
+                bruto_value = ws.cell(row, bruto_col).value
+                best_qty = _choose_best_boletos_quantity(raw_qty, qty_value, precio_value, bruto_value)
+                ws.cell(row, cantidad_col).value = best_qty
 
 
 def process_precio_tenencias_sheet(ws: Worksheet) -> None:

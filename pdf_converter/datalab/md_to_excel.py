@@ -87,8 +87,8 @@ class MarkdownTableParser:
                                    'Interés Devengado', 'Aranceles', 'Derechos', 'Costo Financiero'],
         "FCI": ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
                 'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
-        "Opciones": ['Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
-                      'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
+        "Opciones": ['Instrumento', 'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
+                  'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
         "Futuros": ['Moneda', 'Instrumento', 'Tipo de Liquidación', 'Total'],
         "Resumen": ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos Ef.',
                     'CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', 'Total'],
@@ -582,7 +582,13 @@ class MarkdownTableParser:
                             else:
                                 current_instrumento = clean_text
                             continue
-                        elif current_section in {opciones_section, fci_section}:
+                        elif current_section == opciones_section:
+                            instrument_text = re.sub(r'</?b>', '', first_cell).strip()
+                            instrument_text = re.sub(r'\s*-\s*[^/]+/\s*.*$', '', instrument_text).strip()
+                            if instrument_text and instrument_text.lower() != 'ars' and instrument_text.lower() != 'usd':
+                                current_instrumento = instrument_text
+                            continue
+                        elif current_section == fci_section:
                             continue
                         else:
                             continue
@@ -619,7 +625,7 @@ class MarkdownTableParser:
                             continue
                         if first_cell.startswith('<b>'):
                             continue
-                        current_rows.append(cells[:len(current_headers)])
+                        current_rows.append([current_instrumento or ''] + cells[:len(current_headers) - 1])
                     elif current_section == futuros_section:
                         clean_first = self._clean_markup_text(first_cell)
                         clean_upper = clean_first.upper()
