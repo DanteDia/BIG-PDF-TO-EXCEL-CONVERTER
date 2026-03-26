@@ -89,6 +89,9 @@ class MarkdownTableParser:
                 'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
         "Opciones": ['Instrumento', 'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación', 'Cantidad',
                   'Tipo de Cambio', 'Precio', 'Bruto', 'Gastos', 'IVA', 'Resultado'],
+        "Pagare_CPD": ['Instrumento', 'Concertación', 'Liquidación', 'Vencimiento', 'Tipo Operación',
+                'Abreviatura', 'Moneda', 'Tipo Cambio', 'Valor Nominal', 'Tasa',
+                'Valor Final', 'Gastos', 'Neto'],
         "Futuros": ['Moneda', 'Instrumento', 'Tipo de Liquidación', 'Total'],
         "Resumen": ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos Ef.',
                     'CPD', 'Pagarés', 'Futuros', 'Cau (int)', 'Cau (CF)', 'Total'],
@@ -105,6 +108,7 @@ class MarkdownTableParser:
         "Cauciones Colocadoras",
         "FCI",
         "Opciones",
+        "Pagare_CPD",
         "Futuros",
         "Resumen",
         "Posicion Titulos",
@@ -117,6 +121,9 @@ class MarkdownTableParser:
         "TIT.PRIVADOS DEL EXTERIOR": "Tit.Privados Exterior",
         "RENTA FIJA EN PESOS": "Renta Fija Pesos",
         "RENTA FIJA EN DOLARES": "Renta Fija Dolares",
+        "CPD EN PESOS": "CPD En Pesos",
+        "CPD EN DOLARES": "CPD En Dolares",
+        "CPD EN DÓLARES": "CPD En Dolares",
         "CAUCIONES EN PESOS": "Cauciones Pesos",
         "CAUCIONES EN DOLARES": "Cauciones Dolares",
         "POSICION AL 01/01": "Posicion Inicial",
@@ -130,6 +137,15 @@ class MarkdownTableParser:
         "RESULTADO DE FUTUROS": "Futuros",
         "FUTUROS": "Futuros",
         "OPCIONES": "Opciones",
+        "PAGARE/CPD": "Pagare_CPD",
+        "PAGARE CPD": "Pagare_CPD",
+        "PAGARÉ/CPD": "Pagare_CPD",
+        "PAGARÉ CPD": "Pagare_CPD",
+        "PAGARE": "Pagare_CPD",
+        "PAGARÉ": "Pagare_CPD",
+        "CHEQUES DIFERIDOS": "Pagare_CPD",
+        "ECHEQ": "Pagare_CPD",
+        "CPD": "Pagare_CPD",
         "FCI": "FCI",
         "FONDOS COMUNES": "FCI",
         "RENTAS Y DIVIDENDOS": "Rentas Dividendos",
@@ -381,7 +397,7 @@ class MarkdownTableParser:
         current_categoria = None  # For Rentas/Dividendos
         
         # Sections that should NOT be split by currency
-        no_currency_sections = {"Resumen", "Posicion Titulos", "Boletos", "PrecioTenenciasIniciales", "FCI", "Opciones", "Futuros"}
+        no_currency_sections = {"Resumen", "Posicion Titulos", "Boletos", "PrecioTenenciasIniciales", "FCI", "Opciones", "Pagare_CPD", "Futuros"}
         
         # Sections that need extra columns
         boletos_section = "Boletos"
@@ -389,6 +405,7 @@ class MarkdownTableParser:
         rentas_dividendos_section = "Rentas Dividendos"
         cauciones_section = "Cauciones"
         opciones_section = "Opciones"
+        pagare_cpd_section = "Pagare_CPD"
         futuros_section = "Futuros"
         fci_section = "FCI"
         
@@ -485,6 +502,8 @@ class MarkdownTableParser:
                             current_headers = ['Instrumento', 'Cod.Instrum', 'Categoría', 'tipo_instrumento'] + cells
                         elif current_section == opciones_section:
                             current_headers = self._get_default_visual_headers(opciones_section)
+                        elif current_section == pagare_cpd_section:
+                            current_headers = self._get_default_visual_headers(pagare_cpd_section)
                         elif current_section == futuros_section:
                             current_headers = self._get_default_visual_headers(futuros_section)
                         elif current_section == fci_section:
@@ -588,6 +607,16 @@ class MarkdownTableParser:
                             if instrument_text and instrument_text.lower() != 'ars' and instrument_text.lower() != 'usd':
                                 current_instrumento = instrument_text
                             continue
+                        elif current_section == pagare_cpd_section:
+                            instrument_text = re.sub(r'</?b>', '', first_cell).strip()
+                            instrument_upper = instrument_text.upper()
+                            if instrument_upper in {'ARS', 'USD'}:
+                                continue
+                            if instrument_upper.startswith('TOTAL'):
+                                continue
+                            if instrument_text:
+                                current_instrumento = instrument_text
+                            continue
                         elif current_section == fci_section:
                             continue
                         else:
@@ -622,6 +651,16 @@ class MarkdownTableParser:
                         if clean_upper == 'ARS' or clean_upper == 'USD':
                             continue
                         if clean_upper.startswith('TOTAL OPCIONES'):
+                            continue
+                        if first_cell.startswith('<b>'):
+                            continue
+                        current_rows.append([current_instrumento or ''] + cells[:len(current_headers) - 1])
+                    elif current_section == pagare_cpd_section:
+                        clean_first = self._clean_markup_text(first_cell)
+                        clean_upper = clean_first.upper()
+                        if clean_upper in {'ARS', 'USD'}:
+                            continue
+                        if clean_upper.startswith('TOTAL'):
                             continue
                         if first_cell.startswith('<b>'):
                             continue

@@ -908,6 +908,28 @@ class ExcelToPdfExporter:
             ],
             [18, 48, 42, 24]
         )
+
+    def _build_pagare_cpd_section(self) -> List:
+        return self._build_generic_sheet_section(
+            "Pagare/CPD",
+            'Pagare_CPD',
+            [
+                ('Instrumento', [], 'Instrumento', 'text'),
+                ('Concertación', ['Concertacion'], 'Concertación', 'date'),
+                ('Liquidación', ['Liquidacion'], 'Liquidación', 'date'),
+                ('Vencimiento', [], 'Vencimiento', 'date'),
+                ('Tipo Operación', ['Tipo Operacion'], 'Operación', 'text'),
+                ('Abreviatura', [], 'Abrev.', 'text'),
+                ('Moneda', [], 'Moneda', 'text'),
+                ('Tipo Cambio', ['Tipo de Cambio', 'T.C.'], 'T.C.', 'number'),
+                ('Valor Nominal', [], 'V. Nominal', 'number'),
+                ('Tasa', [], 'Tasa', 'number'),
+                ('Valor Final', [], 'Valor Final', 'number'),
+                ('Gastos', [], 'Gastos', 'number'),
+                ('Neto', ['Total'], 'Neto', 'number'),
+            ],
+            [42, 18, 18, 18, 34, 18, 16, 16, 20, 14, 20, 16, 20]
+        )
     
     def _build_resumen_section(self) -> List:
         """Construye la sección de Resumen.
@@ -942,6 +964,8 @@ class ExcelToPdfExporter:
         fci_usd = self._calculate_sheet_total_by_moneda('FCI', 'USD')
         opciones_ars = self._calculate_sheet_total_by_moneda('Opciones', 'ARS')
         opciones_usd = self._calculate_sheet_total_by_moneda('Opciones', 'USD')
+        pagare_cpd_ars = self._calculate_sheet_total_by_moneda('Pagare_CPD', 'ARS')
+        pagare_cpd_usd = self._calculate_sheet_total_by_moneda('Pagare_CPD', 'USD')
         futuros_ars = self._calculate_sheet_total_by_moneda('Futuros', 'ARS')
         futuros_usd = self._calculate_sheet_total_by_moneda('Futuros', 'USD')
         
@@ -953,13 +977,13 @@ class ExcelToPdfExporter:
         cau_tom_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
         cau_col_usd = self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo')
         
-        total_ars = ventas_ars + fci_ars + opciones_ars + rentas_ars + dividendos_ars + futuros_ars + cau_tom_ars + cau_col_ars
-        total_usd = ventas_usd + fci_usd + opciones_usd + rentas_usd + dividendos_usd + futuros_usd + cau_tom_usd + cau_col_usd
+        total_ars = ventas_ars + fci_ars + opciones_ars + rentas_ars + dividendos_ars + pagare_cpd_ars + futuros_ars + cau_tom_ars + cau_col_ars
+        total_usd = ventas_usd + fci_usd + opciones_usd + rentas_usd + dividendos_usd + pagare_cpd_usd + futuros_usd + cau_tom_usd + cau_col_usd
         
         # Headers
-        table_headers = ['Moneda', 'Resultados', '', '', '', '', '', '', '', '', '', 'Total']
+        table_headers = ['Moneda', 'Resultados', '', '', '', '', '', '', '', '', 'Total']
         sub_headers = ['', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 
-                  'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (Tom)', 'Cau (Col)', '']
+              'Pagare/CPD', 'Futuros', 'Cau (Tom)', 'Cau (Col)', '']
         
         table_data = [table_headers, sub_headers]
         
@@ -971,8 +995,7 @@ class ExcelToPdfExporter:
             self._format_number(opciones_ars),
             self._format_number(rentas_ars),
             self._format_number(dividendos_ars),
-            self._format_number(0),  # Ef. CPD
-            self._format_number(0),  # Pagarés
+            self._format_number(pagare_cpd_ars),
             self._format_number(futuros_ars),
             self._format_number(cau_tom_ars),
             self._format_number(cau_col_ars),
@@ -987,8 +1010,7 @@ class ExcelToPdfExporter:
             self._format_number(opciones_usd),
             self._format_number(rentas_usd),
             self._format_number(dividendos_usd),
-            self._format_number(0),
-            self._format_number(0),
+            self._format_number(pagare_cpd_usd),
             self._format_number(futuros_usd),
             self._format_number(cau_tom_usd),
             self._format_number(cau_col_usd),
@@ -996,7 +1018,7 @@ class ExcelToPdfExporter:
         ])
         
         # Anchos algo más holgados para evitar que números grandes invadan la columna siguiente
-        col_widths = [20, 28, 18, 18, 22, 22, 18, 18, 18, 30, 26, 30]
+        col_widths = [20, 28, 18, 18, 22, 22, 22, 18, 30, 26, 30]
         
         table = Table(table_data, colWidths=[w * mm for w in col_widths])
         
@@ -1009,7 +1031,7 @@ class ExcelToPdfExporter:
             ('ALIGN', (0, 0), (-1, 1), 'CENTER'),
             
             # Merge "Resultados" header
-            ('SPAN', (1, 0), (10, 0)),
+            ('SPAN', (1, 0), (9, 0)),
             
             # Body
             ('FONTNAME', (0, 2), (-1, -1), 'Helvetica'),
@@ -1102,7 +1124,7 @@ class ExcelToPdfExporter:
         return total
 
     def _calculate_sheet_total_by_moneda(self, sheet_name: str, moneda: str) -> float:
-        """Suma la columna Resultado/Total filtrando por la columna Moneda."""
+        """Suma la columna Resultado/Total/Neto filtrando por la columna Moneda."""
         if sheet_name not in self.wb.sheetnames:
             return 0
 
@@ -1114,7 +1136,7 @@ class ExcelToPdfExporter:
             header = str(ws.cell(1, c).value or '').strip().lower()
             if moneda_col is None and 'moneda' in header:
                 moneda_col = c
-            if value_col is None and ('resultado' in header or header == 'total' or ' total' in header):
+            if value_col is None and ('resultado' in header or header == 'total' or ' total' in header or 'neto' in header):
                 value_col = c
 
         if value_col is None:
@@ -1238,6 +1260,10 @@ class ExcelToPdfExporter:
         # Futuros
         elements.extend(self._build_futuros_section())
         elements.append(PageBreak())
+
+        # Pagare/CPD
+        elements.extend(self._build_pagare_cpd_section())
+        elements.append(PageBreak())
         
         # Cauciones Tomadoras
         elements.extend(self._build_cauciones_section('tomadoras'))
@@ -1352,19 +1378,27 @@ class ExcelToPdfExporter:
         dividendos_ars = self._calculate_rentas_dividendos('Rentas Dividendos ARS', ['Dividendos'])
         rentas_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Rentas', 'AMORTIZACION'])
         dividendos_usd = self._calculate_rentas_dividendos('Rentas Dividendos USD', ['Dividendos'])
+        fci_ars = self._calculate_sheet_total_by_moneda('FCI', 'ARS')
+        fci_usd = self._calculate_sheet_total_by_moneda('FCI', 'USD')
+        opciones_ars = self._calculate_sheet_total_by_moneda('Opciones', 'ARS')
+        opciones_usd = self._calculate_sheet_total_by_moneda('Opciones', 'USD')
+        pagare_cpd_ars = self._calculate_sheet_total_by_moneda('Pagare_CPD', 'ARS')
+        pagare_cpd_usd = self._calculate_sheet_total_by_moneda('Pagare_CPD', 'USD')
+        futuros_ars = self._calculate_sheet_total_by_moneda('Futuros', 'ARS')
+        futuros_usd = self._calculate_sheet_total_by_moneda('Futuros', 'USD')
         cau_tom_ars = self._calculate_cauciones('Cauciones Tomadoras', 'ARS', 'costo')
         cau_col_ars = self._calculate_cauciones('Cauciones Colocadoras', 'ARS', 'costo')
         cau_tom_usd = self._calculate_cauciones('Cauciones Tomadoras', 'USD', 'costo')
         cau_col_usd = self._calculate_cauciones('Cauciones Colocadoras', 'USD', 'costo')
-        total_ars = ventas_ars + rentas_ars + dividendos_ars + cau_tom_ars + cau_col_ars
-        total_usd = ventas_usd + rentas_usd + dividendos_usd + cau_tom_usd + cau_col_usd
+        total_ars = ventas_ars + fci_ars + opciones_ars + rentas_ars + dividendos_ars + pagare_cpd_ars + futuros_ars + cau_tom_ars + cau_col_ars
+        total_usd = ventas_usd + fci_usd + opciones_usd + rentas_usd + dividendos_usd + pagare_cpd_usd + futuros_usd + cau_tom_usd + cau_col_usd
 
         row = write_table(
             row,
-            ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total'],
+            ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Pagare/CPD', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total'],
             [
-                ['ARS', ventas_ars, 0, 0, rentas_ars, dividendos_ars, 0, 0, 0, cau_tom_ars, cau_col_ars, total_ars],
-                ['USD', ventas_usd, 0, 0, rentas_usd, dividendos_usd, 0, 0, 0, cau_tom_usd, cau_col_usd, total_usd],
+                ['ARS', ventas_ars, fci_ars, opciones_ars, rentas_ars, dividendos_ars, pagare_cpd_ars, futuros_ars, cau_tom_ars, cau_col_ars, total_ars],
+                ['USD', ventas_usd, fci_usd, opciones_usd, rentas_usd, dividendos_usd, pagare_cpd_usd, futuros_usd, cau_tom_usd, cau_col_usd, total_usd],
             ]
         )
         row += 2
@@ -1504,6 +1538,43 @@ class ExcelToPdfExporter:
             else:
                 row = write_row(row, ["Sin operaciones en el período"])
             row += 2
+
+        # ===== Pagare/CPD =====
+        row = write_row(row, ["Pagare/CPD"], is_bold=True)
+        headers, rows = self._read_sheet_data('Pagare_CPD')
+        if rows:
+            col_map = [
+                ('Instrumento', 'Instrumento'),
+                ('Concertación', 'Concertación'),
+                ('Liquidación', 'Liquidación'),
+                ('Vencimiento', 'Vencimiento'),
+                ('Tipo Operación', 'Operación'),
+                ('Abreviatura', 'Abrev.'),
+                ('Moneda', 'Moneda'),
+                ('Tipo Cambio', 'T.C.'),
+                ('Valor Nominal', 'V. Nominal'),
+                ('Tasa', 'Tasa'),
+                ('Valor Final', 'Valor Final'),
+                ('Gastos', 'Gastos'),
+                ('Neto', 'Neto'),
+            ]
+            col_indices = [self._get_col_index(headers, c) for c, _ in col_map]
+            moneda_idx = self._get_col_index(headers, 'Moneda')
+            by_moneda = {}
+            for r in rows:
+                moneda = r[moneda_idx] if moneda_idx >= 0 and moneda_idx < len(r) and r[moneda_idx] else 'Pesos'
+                by_moneda.setdefault(moneda, []).append(r)
+            for moneda, grouped_rows in by_moneda.items():
+                row = write_row(row, [f"  {moneda}"], is_bold=True)
+                table_headers = [d for _, d in col_map]
+                table_rows = []
+                for r in grouped_rows:
+                    table_rows.append([r[idx] if idx >= 0 and idx < len(r) else None for idx in col_indices])
+                row = write_table(row, table_headers, table_rows)
+                row += 1
+        else:
+            row = write_row(row, ["Sin operaciones en el período"])
+        row += 2
 
         # ===== Cauciones Tomadoras/Colocadoras =====
         for tipo in ['Tomadoras', 'Colocadoras']:

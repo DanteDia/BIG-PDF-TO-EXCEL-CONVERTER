@@ -59,7 +59,7 @@ def resumen_rows(workbook_path: Path):
     wb = _load(workbook_path)
     ws = wb['Resumen']
     return [
-        [ws.cell(row, col).value for col in range(1, 13)]
+        [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
         for row in range(1, 4)
     ]
 

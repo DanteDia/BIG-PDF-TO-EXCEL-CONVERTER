@@ -78,6 +78,21 @@ class GalloVisualMerger:
 
         return 'ARS'
 
+    def _normalize_visual_rentas_currency(self, visual_sheet_name: str, moneda, moneda_default: str) -> str:
+        """Preserva la moneda efectiva para rentas/dividendos importados desde Visual."""
+        sheet_name = str(visual_sheet_name or '').strip().lower()
+        if sheet_name.endswith('ars'):
+            return 'Pesos'
+
+        moneda_text = str(moneda or '').strip().lower()
+        if 'mep' in moneda_text:
+            return 'Dolar MEP'
+        if 'cable' in moneda_text:
+            return 'Dolar Cable'
+        if any(token in moneda_text for token in ['dolar', 'dólar', 'usd']):
+            return 'Dolar'
+        return moneda_default
+
     def _is_visual_origin(self, origen: str) -> bool:
         """Indica si la fila proviene de Visual."""
         return 'visual' in str(origen or '').lower()
@@ -102,6 +117,22 @@ class GalloVisualMerger:
         if self._es_tipo_precio_cada_100(tipo_instrumento):
             return price_num / 100
         return price_num
+
+    def _normalize_initial_cost_price(self, price, tipo_instrumento: str, origen_precio: str = "") -> float:
+        """Normaliza precios de costo inicial sin volver a dividir fuentes ya nominales.
+
+        `PrecioTenenciasIniciales` ya entra como precio por unidad ajustado; volver a
+        aplicar la regla de instrumentos cotizados cada 100 provoca costos casi nulos.
+        """
+        price_num = self._to_float(price)
+        if not price_num:
+            return 0.0
+
+        origen_precio_text = str(origen_precio or "").strip().lower()
+        if origen_precio_text == 'preciotenenciasiniciales':
+            return price_num
+
+        return self._normalize_nominal_price(price_num, tipo_instrumento)
 
     def _build_ars_nominal_formula(self, row_out: int) -> str:
         """Fórmula de Precio Nominal para Resultado Ventas ARS con excepción Visual ARS ya nominal."""
@@ -710,6 +741,7 @@ class GalloVisualMerger:
         self._create_fci(wb)
         self._create_opciones(wb)
         self._create_futuros(wb)
+        self._create_pagare_cpd(wb)
         self._create_resumen(wb)
         self._create_posicion_titulos(wb)  # Copia directa de Visual
         
@@ -828,6 +860,8 @@ class GalloVisualMerger:
         fci_usd = self._sum_sheet_result_by_moneda(wb, 'FCI', 'USD')
         opciones_ars = self._sum_sheet_result_by_moneda(wb, 'Opciones', 'ARS')
         opciones_usd = self._sum_sheet_result_by_moneda(wb, 'Opciones', 'USD')
+        pagare_cpd_ars = self._sum_sheet_result_by_moneda(wb, 'Pagare_CPD', 'ARS')
+        pagare_cpd_usd = self._sum_sheet_result_by_moneda(wb, 'Pagare_CPD', 'USD')
         futuros_ars = self._sum_sheet_result_by_moneda(wb, 'Futuros', 'ARS')
         futuros_usd = self._sum_sheet_result_by_moneda(wb, 'Futuros', 'USD')
 
@@ -845,10 +879,11 @@ class GalloVisualMerger:
         ws.cell(2, 4, opciones_ars)
         ws.cell(2, 5, rentas_ars)
         ws.cell(2, 6, dividendos_ars)
-        ws.cell(2, 9, futuros_ars)
-        ws.cell(2, 10, cauciones_tom_ars)
-        ws.cell(2, 11, cauciones_col_ars)
-        ws.cell(2, 12, (ventas_ars or 0) + (fci_ars or 0) + (opciones_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (futuros_ars or 0) + (cauciones_tom_ars or 0) + (cauciones_col_ars or 0))
+        ws.cell(2, 7, pagare_cpd_ars)
+        ws.cell(2, 8, futuros_ars)
+        ws.cell(2, 9, cauciones_tom_ars)
+        ws.cell(2, 10, cauciones_col_ars)
+        ws.cell(2, 11, (ventas_ars or 0) + (fci_ars or 0) + (opciones_ars or 0) + (rentas_ars or 0) + (dividendos_ars or 0) + (pagare_cpd_ars or 0) + (futuros_ars or 0) + (cauciones_tom_ars or 0) + (cauciones_col_ars or 0))
 
         # Fila USD (row 3)
         ws.cell(3, 2, ventas_usd)
@@ -856,10 +891,11 @@ class GalloVisualMerger:
         ws.cell(3, 4, opciones_usd)
         ws.cell(3, 5, rentas_usd)
         ws.cell(3, 6, dividendos_usd)
-        ws.cell(3, 9, futuros_usd)
-        ws.cell(3, 10, cauciones_tom_usd)
-        ws.cell(3, 11, cauciones_col_usd)
-        ws.cell(3, 12, (ventas_usd or 0) + (fci_usd or 0) + (opciones_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (futuros_usd or 0) + (cauciones_tom_usd or 0) + (cauciones_col_usd or 0))
+        ws.cell(3, 7, pagare_cpd_usd)
+        ws.cell(3, 8, futuros_usd)
+        ws.cell(3, 9, cauciones_tom_usd)
+        ws.cell(3, 10, cauciones_col_usd)
+        ws.cell(3, 11, (ventas_usd or 0) + (fci_usd or 0) + (opciones_usd or 0) + (rentas_usd or 0) + (dividendos_usd or 0) + (pagare_cpd_usd or 0) + (futuros_usd or 0) + (cauciones_tom_usd or 0) + (cauciones_col_usd or 0))
 
     def _find_header_column(self, ws, aliases: List[str]) -> Optional[int]:
         alias_list = [a.lower() for a in aliases]
@@ -875,7 +911,7 @@ class GalloVisualMerger:
 
         ws = wb[sheet_name]
         moneda_col = self._find_header_column(ws, ['moneda'])
-        value_col = self._find_header_column(ws, ['resultado', 'total'])
+        value_col = self._find_header_column(ws, ['resultado', 'total', 'neto'])
 
         if not value_col:
             return 0
@@ -905,6 +941,7 @@ class GalloVisualMerger:
         for row in range(2, ws.max_row + 1):
             cod_especie = ws.cell(row, 4).value  # Col D = Codigo especie
             precio_a_utilizar = self._to_float(ws.cell(row, 16).value)  # Col P = Precio a Utilizar
+            origen_precio = ws.cell(row, 14).value  # Col N = Origen precio costo
             
             # Obtener tipo de instrumento desde cache de EspeciesVisual
             cod_clean = self._clean_codigo(str(cod_especie)) if cod_especie else None
@@ -915,7 +952,7 @@ class GalloVisualMerger:
             ws.cell(row, 21, tipo_instrumento)
             
             # Precio Nominal = Precio a Utilizar normalizado para tipos cotizados cada 100
-            ws.cell(row, 22, self._normalize_nominal_price(precio_a_utilizar, tipo_instrumento))
+            ws.cell(row, 22, self._normalize_initial_cost_price(precio_a_utilizar, tipo_instrumento, origen_precio))
     
     def _materialize_boletos(self, ws):
         """
@@ -1395,12 +1432,7 @@ class GalloVisualMerger:
         # No encontrado en Posicion - usar PrecioTenenciasIniciales si está disponible
         precio_tenencia = self._precio_tenencias_by_codigo.get(cod_instrum, 0)
         if precio_tenencia:
-            precio_bruto = precio_tenencia
-            tipo_instrumento = self._vlookup_especies_visual(cod_instrum, 16)
-            if self._es_tipo_precio_cada_100(tipo_instrumento):
-                precio_nominal = precio_bruto / 100
-            else:
-                precio_nominal = precio_bruto
+            precio_nominal = self._to_float(precio_tenencia)
             if for_usd:
                 precio_nominal = precio_nominal / self.COTIZACION_INICIO_PERIODO
             return (0.0, precio_nominal)
@@ -1558,7 +1590,11 @@ class GalloVisualMerger:
             tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
             # Col V (22): Precio Nominal = Precio a Utilizar normalizado
-            ws.cell(row_out, 22, self._normalize_nominal_price(precio_a_utilizar, self._vlookup_especies_visual(codigo, 16) if codigo else ''))
+            ws.cell(row_out, 22, self._normalize_initial_cost_price(
+                precio_a_utilizar,
+                self._vlookup_especies_visual(codigo, 16) if codigo else '',
+                origen_precio,
+            ))
             
             row_out += 1
     
@@ -1668,7 +1704,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 11, precio_usd)
             ws.cell(row_out, 12, precio_inicial)
             ws.cell(row_out, 13, "")  # precio costo (en proceso)
-            ws.cell(row_out, 14, "")  # origen precio costo
+            ws.cell(row_out, 14, "PreciosInicialesEspecies")  # origen precio costo
             ws.cell(row_out, 15, "")  # comentarios precio costo
             ws.cell(row_out, 16, precio_a_utilizar)
             ws.cell(row_out, 17, importe_pesos)
@@ -1679,7 +1715,11 @@ class GalloVisualMerger:
             tipo_instrumento = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
             ws.cell(row_out, 21, tipo_instrumento)
             # Col V (22): Precio Nominal = Precio a Utilizar normalizado
-            ws.cell(row_out, 22, self._normalize_nominal_price(precio_a_utilizar, self._vlookup_especies_visual(codigo, 16) if codigo else ''))
+            ws.cell(row_out, 22, self._normalize_initial_cost_price(
+                precio_a_utilizar,
+                self._vlookup_especies_visual(codigo, 16) if codigo else '',
+                "PreciosInicialesEspecies",
+            ))
             
             row_out += 1
 
@@ -2362,18 +2402,12 @@ class GalloVisualMerger:
                 except (ValueError, TypeError):
                     cod_num = cod_clean
                 
-                # Determinar moneda correcta
-                if moneda:
-                    if 'peso' in str(moneda).lower():
-                        moneda_final = 'Pesos'
-                    elif 'mep' in str(moneda).lower():
-                        moneda_final = 'Dolar MEP'
-                    elif 'cable' in str(moneda).lower():
-                        moneda_final = 'Dolar Cable'
-                    else:
-                        moneda_final = moneda_default
-                else:
-                    moneda_final = moneda_default
+                # En rentas/dividendos de Visual la hoja de origen define el bucket ARS/USD.
+                moneda_final = self._normalize_visual_rentas_currency(
+                    visual_sheet_name,
+                    moneda,
+                    moneda_default,
+                )
                 
                 bruto = abs(float(importe)) if importe else 0
                 auditoria = f"Origen: Visual-{visual_sheet_name} | Cat: {categoria} | Op: {tipo_operacion}"
@@ -3226,7 +3260,7 @@ class GalloVisualMerger:
         ws = wb.create_sheet("Resumen")
         
         headers = ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos',
-               'Ef. CPD', 'Pagarés', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total']
+               'Pagare/CPD', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total']
         
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -3239,12 +3273,11 @@ class GalloVisualMerger:
         ws.cell(2, 4, '=SUMIF(Opciones!C:C,"*Peso*",Opciones!K:K)+SUMIF(Opciones!C:C,"ARS",Opciones!K:K)')
         ws.cell(2, 5, "=SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Rentas\";'Rentas Dividendos ARS'!J:J;\"*Peso*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Rentas\";'Rentas Dividendos ARS'!J:J;\"ARS\")")
         ws.cell(2, 6, "=SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Dividendos\";'Rentas Dividendos ARS'!J:J;\"*Peso*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos ARS'!M:M;'Rentas Dividendos ARS'!C:C;\"Dividendos\";'Rentas Dividendos ARS'!J:J;\"ARS\")")
-        ws.cell(2, 7, 0)  # Ef. CPD
-        ws.cell(2, 8, 0)  # Pagarés
-        ws.cell(2, 9, '=SUMIF(Futuros!A:A,"ARS",Futuros!D:D)+SUMIF(Futuros!A:A,"*Peso*",Futuros!D:D)')
-        ws.cell(2, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!N:N)")
-        ws.cell(2, 11, "=SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!N:N)")
-        ws.cell(2, 12, "=B2+C2+D2+E2+F2+I2+J2+K2")
+        ws.cell(2, 7, '=SUMIF(Pagare_CPD!G:G,"*Peso*",Pagare_CPD!M:M)+SUMIF(Pagare_CPD!G:G,"ARS",Pagare_CPD!M:M)')
+        ws.cell(2, 8, '=SUMIF(Futuros!A:A,"ARS",Futuros!D:D)+SUMIF(Futuros!A:A,"*Peso*",Futuros!D:D)')
+        ws.cell(2, 9, "=SUMIF('Cauciones Tomadoras'!O:O,\"Pesos\",'Cauciones Tomadoras'!N:N)")
+        ws.cell(2, 10, "=SUMIF('Cauciones Colocadoras'!O:O,\"Pesos\",'Cauciones Colocadoras'!N:N)")
+        ws.cell(2, 11, "=B2+C2+D2+E2+F2+G2+H2+I2+J2")
         
         # Fila USD
         ws.cell(3, 1, "USD")
@@ -3253,12 +3286,11 @@ class GalloVisualMerger:
         ws.cell(3, 4, '=SUMIF(Opciones!C:C,"*Dolar*",Opciones!K:K)+SUMIF(Opciones!C:C,"USD",Opciones!K:K)')
         ws.cell(3, 5, "=SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Rentas\";'Rentas Dividendos USD'!J:J;\"*Dolar*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Rentas\";'Rentas Dividendos USD'!J:J;\"USD\")")
         ws.cell(3, 6, "=SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Dividendos\";'Rentas Dividendos USD'!J:J;\"*Dolar*\")+SUMAR.SI.CONJUNTO('Rentas Dividendos USD'!M:M;'Rentas Dividendos USD'!C:C;\"Dividendos\";'Rentas Dividendos USD'!J:J;\"USD\")")
-        ws.cell(3, 7, 0)
-        ws.cell(3, 8, 0)
-        ws.cell(3, 9, '=SUMIF(Futuros!A:A,"USD",Futuros!D:D)+SUMIF(Futuros!A:A,"*Dolar*",Futuros!D:D)')
-        ws.cell(3, 10, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!N:N)")
-        ws.cell(3, 11, "=SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!N:N)")
-        ws.cell(3, 12, "=B3+C3+D3+E3+F3+I3+J3+K3")
+        ws.cell(3, 7, '=SUMIF(Pagare_CPD!G:G,"*Dolar*",Pagare_CPD!M:M)+SUMIF(Pagare_CPD!G:G,"USD",Pagare_CPD!M:M)')
+        ws.cell(3, 8, '=SUMIF(Futuros!A:A,"USD",Futuros!D:D)+SUMIF(Futuros!A:A,"*Dolar*",Futuros!D:D)')
+        ws.cell(3, 9, "=SUMIF('Cauciones Tomadoras'!O:O,\"*Dolar*\",'Cauciones Tomadoras'!N:N)")
+        ws.cell(3, 10, "=SUMIF('Cauciones Colocadoras'!O:O,\"*Dolar*\",'Cauciones Colocadoras'!N:N)")
+        ws.cell(3, 11, "=B3+C3+D3+E3+F3+G3+H3+I3+J3")
     
     def _sum_column(self, wb: Workbook, sheet_name: str, col: int, moneda_filter: str = None) -> float:
         """Suma una columna de una hoja, opcionalmente filtrando por moneda."""
@@ -3448,6 +3480,157 @@ class GalloVisualMerger:
             ["Futuros", "Resultado de Futuros"],
             ['Moneda', 'Instrumento', 'Tipo de Liquidación', 'Total']
         )
+
+    def _create_pagare_cpd(self, wb: Workbook):
+        """Crea hoja Pagare_CPD consolidando Visual y Gallo en un esquema común."""
+        ws = wb.create_sheet("Pagare_CPD")
+
+        headers = ['Instrumento', 'Concertación', 'Liquidación', 'Vencimiento', 'Tipo Operación',
+                   'Abreviatura', 'Moneda', 'Tipo Cambio', 'Valor Nominal', 'Tasa',
+                   'Valor Final', 'Gastos', 'Neto', 'Origen']
+
+        for col, header in enumerate(headers, 1):
+            ws.cell(1, col, header)
+            ws.cell(1, col).font = Font(bold=True)
+
+        rows_out = []
+
+        def _to_float(value):
+            if value in (None, ''):
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            text = str(value).strip()
+            if not text:
+                return 0.0
+            text = text.replace('.', '').replace(',', '.')
+            try:
+                return float(text)
+            except Exception:
+                return 0.0
+
+        def _moneda_display(value, fallback='Pesos'):
+            text = str(value or '').strip()
+            if not text:
+                return fallback
+            lowered = text.lower()
+            if 'peso' in lowered or lowered == 'ars':
+                return 'Pesos'
+            if 'cable' in lowered:
+                return 'Dolar Cable'
+            if 'mep' in lowered:
+                return 'Dolar MEP'
+            if any(token in lowered for token in ['dolar', 'dólar', 'usd', 'u$d', 'dol']):
+                return 'Dolar'
+            return text
+
+        if 'Pagare_CPD' in self.visual_wb.sheetnames:
+            visual_ws = self.visual_wb['Pagare_CPD']
+            for row in range(2, visual_ws.max_row + 1):
+                if not any(visual_ws.cell(row, col).value not in (None, '') for col in range(1, visual_ws.max_column + 1)):
+                    continue
+
+                concertacion = visual_ws.cell(row, 2).value
+                fecha_dt, year = self._parse_fecha(concertacion)
+                if year and year != 2025:
+                    continue
+
+                rows_out.append({
+                    'instrumento': visual_ws.cell(row, 1).value,
+                    'concertacion': fecha_dt if fecha_dt else concertacion,
+                    'liquidacion': visual_ws.cell(row, 3).value,
+                    'vencimiento': visual_ws.cell(row, 4).value,
+                    'tipo_operacion': visual_ws.cell(row, 5).value,
+                    'abreviatura': visual_ws.cell(row, 6).value,
+                    'moneda': _moneda_display(visual_ws.cell(row, 7).value),
+                    'tipo_cambio': visual_ws.cell(row, 8).value,
+                    'valor_nominal': visual_ws.cell(row, 9).value,
+                    'tasa': visual_ws.cell(row, 10).value,
+                    'valor_final': visual_ws.cell(row, 11).value,
+                    'gastos': visual_ws.cell(row, 12).value,
+                    'neto': visual_ws.cell(row, 13).value,
+                    'origen': 'Visual',
+                })
+
+        for sheet_name in self.gallo_wb.sheetnames:
+            sheet_lower = sheet_name.lower()
+            if not any(token in sheet_lower for token in ['cpd', 'pagare', 'pagaré']):
+                continue
+            if any(skip in sheet_name for skip in ['Posicion', 'Resultado', 'Posición']):
+                continue
+
+            gallo_ws = self.gallo_wb[sheet_name]
+            moneda = 'Pesos'
+            if 'exterior' in sheet_lower:
+                moneda = 'Dolar Cable'
+            elif 'dolar' in sheet_lower or 'dólar' in sheet_lower:
+                moneda = 'Dolar MEP'
+
+            for row in range(2, gallo_ws.max_row + 1):
+                operacion = gallo_ws.cell(row, 5).value
+                fecha = gallo_ws.cell(row, 4).value
+                if not operacion:
+                    continue
+
+                fecha_dt, year = self._parse_fecha(fecha)
+                if year and year != 2025:
+                    continue
+
+                codigo = gallo_ws.cell(row, 2).value
+                especie = gallo_ws.cell(row, 3).value
+                cantidad = gallo_ws.cell(row, 7).value
+                tasa = gallo_ws.cell(row, 8).value
+                valor_final = gallo_ws.cell(row, 9).value
+                resultado_pesos = gallo_ws.cell(row, 11).value
+                resultado_usd = gallo_ws.cell(row, 12).value
+                gastos_pesos = gallo_ws.cell(row, 13).value
+                gastos_usd = gallo_ws.cell(row, 14).value
+
+                gastos = gastos_pesos if moneda == 'Pesos' else gastos_usd
+                neto = resultado_pesos if moneda == 'Pesos' else resultado_usd
+                if neto in (None, ''):
+                    neto = _to_float(valor_final) - _to_float(gastos)
+
+                rows_out.append({
+                    'instrumento': especie or codigo,
+                    'concertacion': fecha_dt if fecha_dt else fecha,
+                    'liquidacion': '',
+                    'vencimiento': '',
+                    'tipo_operacion': operacion,
+                    'abreviatura': codigo,
+                    'moneda': moneda,
+                    'tipo_cambio': 1 if moneda == 'Pesos' else None,
+                    'valor_nominal': cantidad,
+                    'tasa': tasa,
+                    'valor_final': valor_final,
+                    'gastos': gastos,
+                    'neto': neto,
+                    'origen': f'Gallo-{sheet_name}',
+                })
+
+        def _sort_key(item):
+            fecha = item.get('concertacion')
+            if isinstance(fecha, datetime):
+                return (fecha, str(item.get('instrumento') or ''))
+            return (datetime.min, str(item.get('instrumento') or ''))
+
+        rows_out.sort(key=_sort_key)
+
+        for row_out, item in enumerate(rows_out, start=2):
+            ws.cell(row_out, 1, item['instrumento'])
+            ws.cell(row_out, 2, item['concertacion'])
+            ws.cell(row_out, 3, item['liquidacion'])
+            ws.cell(row_out, 4, item['vencimiento'])
+            ws.cell(row_out, 5, item['tipo_operacion'])
+            ws.cell(row_out, 6, item['abreviatura'])
+            ws.cell(row_out, 7, item['moneda'])
+            ws.cell(row_out, 8, item['tipo_cambio'])
+            ws.cell(row_out, 9, item['valor_nominal'])
+            ws.cell(row_out, 10, item['tasa'])
+            ws.cell(row_out, 11, item['valor_final'])
+            ws.cell(row_out, 12, item['gastos'])
+            ws.cell(row_out, 13, item['neto'])
+            ws.cell(row_out, 14, item['origen'])
 
     def _create_posicion_titulos(self, wb: Workbook):
         """Crea hoja Posicion Titulos con datos de Visual (fuente principal).

@@ -1,0 +1,12 @@
+CANULLO approved baseline created on 2026-03-26
+Workbook: 10600_CANULLO_MARTHA_NOEMI_Resumen_Impositivo_FIXED_values.xlsx
+PDF: 10600_CANULLO_MARTHA_NOEMI_Resumen_Impositivo_FIXED.pdf
+
+Resumen:
+Row 2: ['ARS', 4430156.111999989, 0, 0, 393.75, 714054.1499999999, 0, 0, -2469126.539999992, 0, 2675477.471999997]
+Row 3: ['USD', 43486.18535940888, 0, 0, 7301.08, 0, 0, 0, -1976.479999999962, 44.35999999997862, 48855.1453594089]
+
+Protected invariants:
+- Rentas Dividendos ARS contains the approved Tenaris Visual row with Moneda=Pesos and Importe=63221.06.
+- Rentas Dividendos USD must not contain the Visual Tenaris dividend routed from ARS.
+- Full workbook values are compared exactly by smoke against this baseline.
