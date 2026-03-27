@@ -62,8 +62,16 @@ class GalloVisualMerger:
         text = " ".join(str(v or "") for v in values).lower()
         return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
 
-    def _classify_rentas_currency(self, moneda, moneda_emision=None) -> str:
+    def _classify_rentas_currency(self, moneda, moneda_emision=None, origen: str = "") -> str:
         """Clasifica una renta/dividendo en ARS o USD priorizando la moneda efectiva de la fila."""
+        origen_text = str(origen or '').strip().lower()
+        if 'visual-rentas dividendos ars' in origen_text:
+            return 'ARS'
+        if 'visual-rentas dividendos usd' in origen_text:
+            return 'USD'
+        if 'gallo' in origen_text and self._is_dollar_related(moneda_emision, origen):
+            return 'USD'
+
         moneda_text = str(moneda or '').strip().lower()
         if 'peso' in moneda_text or moneda_text == 'ars':
             return 'ARS'
@@ -117,6 +125,87 @@ class GalloVisualMerger:
         if self._es_tipo_precio_cada_100(tipo_instrumento):
             return price_num / 100
         return price_num
+
+    def _uses_visual_raw_trade_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> bool:
+        """Detecta filas Visual cuyo precio de boleto ya viene en precio operado correcto.
+
+        Parma mostró que en Boletos/Resultados de Visual para Títulos Públicos y
+        Obligaciones Negociables hay combinaciones donde el precio no debe volver a
+        dividirse por 100: pesos con precios ~1.200/1.500 y dólares con precios ~0.63/0.95
+        que representan cotización operada correcta del trade.
+        """
+        if not self._is_visual_origin(origen):
+            return False
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return False
+
+        price_num = abs(self._to_float(price))
+        moneda_text = str(moneda or "").strip().lower()
+
+        if 'peso' in moneda_text or moneda_text == 'ars':
+            return price_num >= 100
+
+        if any(token in moneda_text for token in ['dolar', 'dólar', 'usd', 'mep', 'cabl']):
+            return 0 < price_num < 2
+
+        return False
+
+    def _normalize_trade_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "", moneda_tipo: str = "") -> float:
+        """Normaliza precios de trade respetando excepciones validadas por origen/capa."""
+        price_num = self._to_float(price)
+        if self._uses_visual_raw_trade_price(price_num, tipo_instrumento, origen, moneda):
+            return price_num
+        return self._normalize_nominal_price(price_num, tipo_instrumento, origen, moneda_tipo)
+
+    def _normalize_usd_result_nominal_price(self, nominal_price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> float:
+        """Convierte a precio económico unitario para Resultado Ventas USD.
+
+        En BYMA, bonos y ON suelen operarse con pantalla "cada 100". En resultado USD
+        necesitamos comparar venta y costo en la misma base económica por unidad.
+        Si una fila TP/ON/Letras queda con nominal ~100, se lleva a ~1 dividiendo por 100.
+        """
+        price_num = self._to_float(nominal_price)
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return price_num
+        if price_num <= 0:
+            return price_num
+
+        if abs(price_num) >= 10:
+            return price_num / 100
+        return price_num
+
+    def _should_guardrail_stock_price(self, stock_price: float, nominal_price: float, tipo_instrumento: str, moneda_tipo: str) -> bool:
+        """Detecta precios de stock absurdos frente al precio nominal de la operación.
+
+        Se usa como protocolo de emergencia para no reportar resultados claramente inválidos
+        cuando el dato fuente o el fallback de costo inicial entra en escala incorrecta.
+        """
+        if moneda_tipo != "USD":
+            return False
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return False
+
+        stock_val = abs(self._to_float(stock_price))
+        nominal_val = abs(self._to_float(nominal_price))
+        if stock_val <= 0 or nominal_val <= 0:
+            return False
+
+        ratio = stock_val / nominal_val
+        return ratio < 0.01 or ratio > 100
+
+    def _resolve_usd_stock_price(self, raw_price, nominal_price, tipo_instrumento: str, cod_instrum: str = "") -> float:
+        """Normaliza el precio de stock inicial USD usando reglas y fallbacks de seguridad."""
+        stock_price = self._to_float(raw_price)
+        nominal_val = abs(self._to_float(nominal_price))
+
+        if stock_price <= 0:
+            return stock_price
+
+        if self._es_tipo_precio_cada_100(tipo_instrumento) and nominal_val > 0:
+            if stock_price > 2 and nominal_val < 5:
+                stock_price = stock_price / 100
+
+        return stock_price
 
     def _normalize_initial_cost_price(self, price, tipo_instrumento: str, origen_precio: str = "") -> float:
         """Normaliza precios de costo inicial sin volver a dividir fuentes ya nominales.
@@ -1004,11 +1093,16 @@ class GalloVisualMerger:
             except:
                 precio_num = 0
             
-            # Calcular Precio Nominal: dividir por 100 si es tipo que lo requiere
-            if self._es_tipo_precio_cada_100(tipo_instrumento):
-                precio_nominal = precio_num / 100
-            else:
-                precio_nominal = precio_num
+            origen = ws.cell(row, 17).value  # Col Q = Origen
+            moneda = ws.cell(row, 5).value   # Col E = Moneda
+
+            # Calcular Precio Nominal con reglas por origen/capa
+            precio_nominal = self._normalize_trade_price(
+                precio_num,
+                tipo_instrumento,
+                origen,
+                moneda,
+            )
             
             # Guardar Precio Nominal en Col 20 (nueva columna después de las 19 originales)
             ws.cell(row, col_precio_nominal, precio_nominal)
@@ -1158,7 +1252,8 @@ class GalloVisualMerger:
                 gastos = self._to_float(ws.cell(row, 14).value)   # Col N = Gastos
                 
                 # Calcular Precio Nominal
-                precio_nominal = self._normalize_nominal_price(precio_original, tipo_instrumento, origen, moneda_tipo)
+                moneda_val = ws.cell(row, 7).value  # Col G = Moneda
+                precio_nominal = self._normalize_trade_price(precio_original, tipo_instrumento, origen, moneda_val, moneda_tipo)
                 current_nominal_price = precio_nominal
                 ws.cell(row, col_precio_nominal, precio_nominal)
                 
@@ -1219,17 +1314,22 @@ class GalloVisualMerger:
                 # 1. Primero convertir precio_std_original a USD: precio_std_original * tipo_cambio
                 # 2. Si es ON/TP/Letras, dividir por 100
                 precio_std_usd_raw = precio_std_original * tipo_cambio
-                precio_std_usd = self._normalize_nominal_price(precio_std_usd_raw, tipo_instrumento)
-                current_nominal_price = precio_std_usd
+                precio_std_usd = self._normalize_trade_price(precio_std_usd_raw, tipo_instrumento, origen, moneda_val, moneda_tipo)
+                precio_resultado_usd = self._normalize_usd_result_nominal_price(precio_std_usd, tipo_instrumento, origen, moneda_val)
+                current_nominal_price = precio_resultado_usd
                 
                 # Materializar L (Precio Std USD) - Este es el precio por 100VN en USD
                 ws.cell(row, 12, precio_std_usd_raw)
                 
                 # Guardar Precio Nominal (en USD, dividido por 100 si corresponde)
-                ws.cell(row, col_precio_nominal, precio_std_usd)
+                ws.cell(row, col_precio_nominal, precio_resultado_usd)
+
+                # Reconciliar stock inicial/fallback con la misma escala nominal de la venta.
+                if cod_instrum != prev_cod_instrum:
+                    pass
                 
                 # Materializar M (Bruto USD) = I * Precio Nominal (ya en USD y ajustado)
-                bruto_usd = cantidad * precio_std_usd
+                bruto_usd = cantidad * precio_resultado_usd
                 ws.cell(row, 13, bruto_usd)
                 
                 # Dividir gastos e intereses por 100 para ON/TP/Letras
@@ -1264,11 +1364,21 @@ class GalloVisualMerger:
                 if is_usd_sheet and stock_cantidad > 0 and valor_usd_dia > 0:
                     stock_precio = stock_precio / valor_usd_dia
                 # Nota: si stock_cantidad == 0, el precio ya viene en USD (del fallback)
+
+                if is_usd_sheet:
+                    stock_precio = self._resolve_usd_stock_price(stock_precio, precio_resultado_usd, tipo_instrumento, cod_instrum)
             # else: usar valores de stock_cantidad y stock_precio de la fila anterior
             
             # Guardar stock inicial para esta fila
             cantidad_stock_inicial = stock_cantidad
             precio_stock_inicial = stock_precio  # Ya es nominal y en USD para hojas USD
+
+            guardrail_stock_price = self._should_guardrail_stock_price(
+                precio_stock_inicial,
+                current_nominal_price,
+                tipo_instrumento,
+                moneda_tipo,
+            )
             
             # Calcular costo, neto, resultado según fórmulas Excel
             if cantidad < 0:  # VENTA
@@ -1293,7 +1403,7 @@ class GalloVisualMerger:
                 valor_anterior = stock_cantidad * stock_precio
                 if moneda_tipo == "USD":
                     # Para USD: usar precio nominal en USD
-                    valor_nuevo = cantidad * precio_std_usd
+                    valor_nuevo = cantidad * precio_resultado_usd
                 else:
                     valor_nuevo = cantidad * precio_nominal
                 stock_cantidad += cantidad
@@ -1328,7 +1438,10 @@ class GalloVisualMerger:
             
             ws.cell(row, col_costo, costo)
             ws.cell(row, col_neto, neto)
-            ws.cell(row, col_resultado, resultado)
+            if guardrail_stock_price:
+                ws.cell(row, col_resultado, '|')
+            else:
+                ws.cell(row, col_resultado, resultado)
             ws.cell(row, col_stock_fin_qty, cantidad_stock_final)
             
             if cantidad_stock_final != 0:
@@ -1348,6 +1461,8 @@ class GalloVisualMerger:
                 max_price = max(current_abs, stock_abs)
                 if min_price > 0 and (max_price / min_price) > 20:
                     warnings.append('ESCALA_PRECIO_STOCK')
+            if guardrail_stock_price:
+                warnings.append('STOCK_PRICE_GUARDRAIL')
             if warnings:
                 prev_audit = str(ws.cell(row, audit_col).value or '').strip()
                 suffix = ' | ALERTA: ' + ', '.join(warnings)
@@ -2912,8 +3027,8 @@ class GalloVisualMerger:
                     )
                 else:
                     fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
-                # Fórmula: SI(P=0,0,SI(pos=0,fallback, pos/P))
-                ws.cell(row_out, 21, f'=SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio}/P{row_out};{pos_lookup_gallo}/P{row_out}))')
+                # Fórmula: SI(P=0,0; usa precio fallback o posición ya expresado en USD nominal)
+                ws.cell(row_out, 21, f'=SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}/P{row_out}))')
                 explicacion_t = f"T=BUSCARV(D{row_out}→Posicion Inicial Gallo col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
@@ -2927,7 +3042,7 @@ class GalloVisualMerger:
                     )
                 else:
                     fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
-                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio}/P{row_out};{pos_lookup_gallo}/P{row_out})))')
+                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}/P{row_out})))')
                 explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: BUSCARV(col V=Precio Nominal (Posicion Inicial Gallo), fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
@@ -2991,7 +3106,7 @@ class GalloVisualMerger:
             moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
             
             # Filtrar solo ARS usando la moneda efectiva de la fila como verdad principal
-            if self._classify_rentas_currency(moneda, moneda_emision) != 'ARS':
+            if self._classify_rentas_currency(moneda, moneda_emision, rentas_ws.cell(rentas_row, 18).value) != 'ARS':
                 continue
             
             tipo_operacion = rentas_ws.cell(rentas_row, 6).value  # Col F
@@ -3029,7 +3144,7 @@ class GalloVisualMerger:
                 importe = 0
             
             origen = rentas_ws.cell(rentas_row, 18).value  # Col R
-            if moneda_emision and self._classify_rentas_currency(moneda, moneda_emision) == 'ARS' and 'dolar' in str(moneda_emision).lower():
+            if moneda_emision and self._classify_rentas_currency(moneda, moneda_emision, origen) == 'ARS' and 'dolar' in str(moneda_emision).lower():
                 origen = f"{origen} | ALERTA: MONEDA_EFECTIVA_ARS"
             
             # Tipo de Cambio ARS: 1 si Pesos, Valor USD del día si contiene dolar
@@ -3140,7 +3255,7 @@ class GalloVisualMerger:
             moneda = rentas_ws.cell(rentas_row, 5).value  # Col E
             
             # Filtrar solo USD usando la moneda efectiva de la fila como verdad principal
-            if self._classify_rentas_currency(moneda, moneda_emision) != 'USD':
+            if self._classify_rentas_currency(moneda, moneda_emision, rentas_ws.cell(rentas_row, 18).value) != 'USD':
                 continue
             
             tipo_operacion = rentas_ws.cell(rentas_row, 6).value  # Col F
