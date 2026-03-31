@@ -209,6 +209,16 @@ class ExcelToPdfExporter:
             return formatted
         except (ValueError, TypeError):
             return str(value) if value else ""
+
+    def _format_price_number(self, value: Any) -> str:
+        """Muestra micro-precios con 4 decimales para evitar que se vean como 0,00."""
+        try:
+            num = abs(float(value))
+        except (ValueError, TypeError):
+            return str(value) if value else ""
+
+        decimals = 4 if 0 < num < 1 else 2
+        return self._format_number(value, decimals)
     
     def _format_date(self, value: Any) -> str:
         """Formatea una fecha como D/M/AAAA."""
@@ -330,7 +340,11 @@ class ExcelToPdfExporter:
                 if fmt_type == 'date':
                     formatted_row.append(self._format_date(val))
                 elif fmt_type == 'number':
-                    formatted_row.append(self._format_number(val, 2))
+                    header_name = str(headers[i] if i < len(headers) else '').lower()
+                    if 'precio' in header_name:
+                        formatted_row.append(self._format_price_number(val))
+                    else:
+                        formatted_row.append(self._format_number(val, 2))
                 elif fmt_type == 'integer':
                     formatted_row.append(self._format_number(val, 0))
                 elif fmt_type == 'text_truncate':

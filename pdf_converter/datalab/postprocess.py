@@ -178,10 +178,17 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
             # US format with comma as thousands: "1,234.56" or just commas "1,234"
             value = value.replace(',', '')
     else:
+        # OCR sometimes emits quantities like 125.000.0000 or 1.234.567.90 where the
+        # last dot is the decimal separator and previous dots are thousands separators.
+        dotted_decimal_tail = re.match(r'^(\d{1,3}(?:\.\d{3})+)\.(\d{2}|\d{4})$', value)
+        if dotted_decimal_tail:
+            integer_part = dotted_decimal_tail.group(1).replace('.', '')
+            decimal_part = dotted_decimal_tail.group(2)
+            value = f"{integer_part}.{decimal_part}"
         # No comma - check if dots are thousands separators
         # e.g., "91.886" is 91886 (no decimal), "91.88" could be 91.88
         # If there's a dot followed by exactly 3 digits and no more dots after, it's thousands
-        if re.match(r'^\d{1,3}(\.\d{3})+$', value):
+        elif re.match(r'^\d{1,3}(\.\d{3})+$', value):
             # Pattern like "91.886" or "1.234.567" - these are thousands separators
             value = value.replace('.', '')
         # Otherwise keep as is (could be a decimal like "1.5" or "123.45")
@@ -263,6 +270,21 @@ def _choose_best_boletos_quantity(raw_qty: str, parsed_qty, precio, bruto):
         if best_error is None or error < best_error:
             best_error = error
             best_candidate = candidate
+
+    # Guardrail extra para boletos Visual: si el candidato elegido infla la cantidad en
+    # tres órdenes de magnitud frente al patrón con 4 decimales OCR, preferir la versión
+    # desescalada cuando también sigue cerrando razonablemente contra el bruto.
+    if candidates and len(candidates) >= 2:
+        smallest = min(candidates, key=lambda x: abs(x))
+        largest = max(candidates, key=lambda x: abs(x))
+        if abs(largest) >= abs(smallest) * 1000:
+            expected_small = abs(smallest) * precio_num
+            rel_small_error = abs(expected_small - bruto_num) / bruto_num if bruto_num else 1
+            rel_large_error = abs(abs(largest) * precio_num - bruto_num) / bruto_num if bruto_num else 1
+            if rel_small_error <= 0.05:
+                best_candidate = smallest
+            elif rel_large_error > 0.5 and rel_small_error < rel_large_error:
+                best_candidate = smallest
 
     return int(best_candidate) if float(best_candidate).is_integer() else best_candidate
 

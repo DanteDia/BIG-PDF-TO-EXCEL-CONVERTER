@@ -107,15 +107,31 @@ class GalloVisualMerger:
 
     def _uses_visual_ars_raw_nominal(self, price, tipo_instrumento: str, origen: str = "", moneda_tipo: str = "") -> bool:
         """Determina si una fila Visual ARS ya viene con precio nominal y no debe dividirse por 100."""
-        if moneda_tipo != "ARS" or not self._is_visual_origin(origen):
+        moneda_text = str(moneda_tipo or "").strip().lower()
+        if moneda_text not in ("ars", "pesos") or not self._is_visual_origin(origen):
             return False
         if not self._es_tipo_precio_cada_100(tipo_instrumento):
             return False
 
         price_num = abs(self._to_float(price))
         # En Visual ARS los títulos/letras problemáticos vienen ya nominales (~1.xx).
-        # Si además están en magnitud baja, no aplicar ajuste /100.
-        return 0 < price_num < 20
+        # Parma mostró que el corte seguro debe ser más estricto para no capturar precios
+        # de pantalla intermedios que todavía están expresados cada 100.
+        return 0 < price_num < 2
+
+    def _is_visual_usd_micro_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> bool:
+        """Detecta micro-precios Visual USD que no deben seguir la heurística normal raw<2."""
+        if not self._is_visual_origin(origen):
+            return False
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return False
+
+        moneda_text = str(moneda or "").strip().lower()
+        if not any(token in moneda_text for token in ['dolar', 'dólar', 'usd', 'mep', 'cabl']):
+            return False
+
+        price_num = abs(self._to_float(price))
+        return 0 < price_num < 0.01
 
     def _normalize_nominal_price(self, price, tipo_instrumento: str, origen: str = "", moneda_tipo: str = "") -> float:
         """Normaliza un precio a base nominal consistente para cálculos de stock/resultados."""
@@ -146,6 +162,8 @@ class GalloVisualMerger:
             return price_num >= 100
 
         if any(token in moneda_text for token in ['dolar', 'dólar', 'usd', 'mep', 'cabl']):
+            if self._is_visual_usd_micro_price(price_num, tipo_instrumento, origen, moneda):
+                return False
             return 0 < price_num < 2
 
         return False
@@ -153,9 +171,38 @@ class GalloVisualMerger:
     def _normalize_trade_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "", moneda_tipo: str = "") -> float:
         """Normaliza precios de trade respetando excepciones validadas por origen/capa."""
         price_num = self._to_float(price)
+        if self._is_visual_usd_micro_price(price_num, tipo_instrumento, origen, moneda):
+            return price_num
         if self._uses_visual_raw_trade_price(price_num, tipo_instrumento, origen, moneda):
             return price_num
-        return self._normalize_nominal_price(price_num, tipo_instrumento, origen, moneda_tipo)
+        moneda_context = moneda_tipo or moneda
+        return self._normalize_nominal_price(price_num, tipo_instrumento, origen, moneda_context)
+
+    def _should_standardize_visual_usd_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> bool:
+        """Decide si una fila Visual debe elevarse a pantalla x100 al construir Resultado Ventas USD."""
+        if not self._is_visual_origin(origen):
+            return False
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return False
+        if self._uses_visual_ars_raw_nominal(price, tipo_instrumento, origen, moneda):
+            return False
+        if self._is_visual_usd_micro_price(price, tipo_instrumento, origen, moneda):
+            return False
+        return True
+
+    def _should_preserve_visual_source_money(self, origen: str, bruto_fuente: float, neto_fuente: float, bruto_calc: float, neto_calc: float) -> bool:
+        """Decide si conviene preservar los monetarios fuente de Visual frente a una recomputación dañada."""
+        if not self._is_visual_origin(origen):
+            return False
+        if abs(bruto_fuente) <= 0 and abs(neto_fuente) <= 0:
+            return False
+
+        calc_ref = max(abs(bruto_calc), abs(neto_calc))
+        source_ref = max(abs(bruto_fuente), abs(neto_fuente))
+        source_material = source_ref >= 100
+        calc_collapsed = calc_ref < 1
+        calc_far_below_source = source_ref > 0 and calc_ref <= source_ref * 0.1
+        return source_material and (calc_collapsed or calc_far_below_source)
 
     def _normalize_usd_result_nominal_price(self, nominal_price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> float:
         """Convierte a precio económico unitario para Resultado Ventas USD.
@@ -1107,6 +1154,10 @@ class GalloVisualMerger:
             # Guardar Precio Nominal en Col 20 (nueva columna después de las 19 originales)
             ws.cell(row, col_precio_nominal, precio_nominal)
             
+            # Capturar monetarios fuente de Visual antes de recomputar.
+            bruto_fuente = self._to_float(ws.cell(row, 13).value)
+            neto_fuente = self._to_float(ws.cell(row, 16).value)
+
             # Col M (13): Bruto = Cantidad * Precio Nominal
             cantidad = ws.cell(row, 10).value  # Col J
             try:
@@ -1128,6 +1179,12 @@ class GalloVisualMerger:
                 neto = cantidad_num * precio_nominal + gastos_num
             else:
                 neto = cantidad_num * precio_nominal - gastos_num
+
+            if self._should_preserve_visual_source_money(origen, bruto_fuente, neto_fuente, bruto, neto):
+                bruto = bruto_fuente
+                neto = neto_fuente
+                ws.cell(row, 13, bruto)
+                neto = neto_fuente
             ws.cell(row, 16, neto)
             
             # Col R (18): Moneda Emisión - Si es fórmula, buscar en cache
@@ -1953,6 +2010,8 @@ class GalloVisualMerger:
                     'precio': precio,
                     'interes': 0,
                     'gastos': gastos,
+                    'bruto_fuente': None,
+                    'neto_fuente': None,
                     'origen': f"gallo-{sheet_name}",
                     'auditoria': auditoria,
                     'tipo_instrumento_val': None,  # Se usará fórmula
@@ -1972,8 +2031,10 @@ class GalloVisualMerger:
                 instrumento = visual_boletos.cell(row, 8).value
                 cantidad = visual_boletos.cell(row, 9).value
                 precio = visual_boletos.cell(row, 10).value
+                bruto_fuente = visual_boletos.cell(row, 12).value
                 interes = visual_boletos.cell(row, 13).value
                 gastos = visual_boletos.cell(row, 14).value
+                neto_fuente = visual_boletos.cell(row, 15).value
                 
                 if not operacion:
                     continue
@@ -2003,8 +2064,10 @@ class GalloVisualMerger:
                     'especie': instrumento,
                     'cantidad': cantidad,
                     'precio': precio,
+                    'bruto_fuente': bruto_fuente,
                     'interes': interes if interes else 0,
                     'gastos': gastos if gastos else 0,
+                    'neto_fuente': neto_fuente,
                     'origen': "Visual",
                     'auditoria': auditoria,
                     'tipo_instrumento_val': tipo_instrumento,
@@ -2056,10 +2119,16 @@ class GalloVisualMerger:
             ws.cell(row_out, 10, trans['cantidad'])
             ws.cell(row_out, 11, trans['precio'])
             ws.cell(row_out, 12, tipo_cambio)
-            ws.cell(row_out, 13, bruto)
+            if trans.get('bruto_fuente') is not None and 'visual' in str(trans.get('origen') or '').lower():
+                ws.cell(row_out, 13, trans.get('bruto_fuente'))
+            else:
+                ws.cell(row_out, 13, bruto)
             ws.cell(row_out, 14, trans['interes'])
             ws.cell(row_out, 15, trans['gastos'])
-            ws.cell(row_out, 16, neto)
+            if trans.get('neto_fuente') is not None and 'visual' in str(trans.get('origen') or '').lower():
+                ws.cell(row_out, 16, trans.get('neto_fuente'))
+            else:
+                ws.cell(row_out, 16, neto)
             ws.cell(row_out, 17, trans['origen'])
             ws.cell(row_out, 18, moneda_emision)
             ws.cell(row_out, 19, trans['auditoria'])
@@ -2959,7 +3028,13 @@ class GalloVisualMerger:
             is_visual = 'visual' in origen_val.lower() if origen_val else False
             is_gallo = 'gallo' in origen_val.lower() if origen_val else False
             tipo_instrumento_val = str(trans['tipo_instrumento'] or '')
-            requires_standard_100 = is_visual and self._es_tipo_precio_cada_100(tipo_instrumento_val)
+            precio_val = trans['precio'] or 0
+            requires_standard_100 = self._should_standardize_visual_usd_price(
+                precio_val,
+                tipo_instrumento_val,
+                origen_val,
+                trans['moneda'],
+            )
             
             # Columnas A-J: Valores directos
             ws.cell(row_out, 1, trans['origen'])
@@ -2974,7 +3049,6 @@ class GalloVisualMerger:
             ws.cell(row_out, 10, trans['precio'])
             
             # Col K: Precio Standarizado (x100 si Visual)
-            precio_val = trans['precio'] or 0
             try:
                 precio_std = float(precio_val) * 100 if requires_standard_100 else float(precio_val)
             except:
