@@ -4,8 +4,9 @@ Transforms raw extracted data to match the expected Excel format.
 """
 
 import re
+from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, List, Optional, Set, Tuple
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from rich.console import Console
@@ -200,7 +201,277 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
         return None
 
 
-def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
+def _is_micro_usd_quantity_context(precio, tipo_instrumento: str = "", moneda: str = "") -> bool:
+    """Limita reinterpretaciones agresivas de cantidades a filas Visual USD micro de letras/TP."""
+    try:
+        precio_num = abs(float(precio or 0))
+    except Exception:
+        return False
+
+    tipo_text = str(tipo_instrumento or '').strip().lower()
+    moneda_text = str(moneda or '').strip().lower()
+    is_supported_tipo = any(token in tipo_text for token in ['letra', 'titulo', 'título', 'obligacion'])
+    is_usd = any(token in moneda_text for token in ['dolar', 'dólar', 'usd', 'mep', 'cabl'])
+    return is_supported_tipo and is_usd and 0 < precio_num < 0.01
+
+
+def _build_ambiguous_quantity_group_key(raw_qty: str, tipo_instrumento: str = "", codigo=None, concertacion=None):
+    """Agrupa legs del mismo boleto Visual para propagar la reinterpretación de cantidad."""
+    if not raw_qty or not isinstance(raw_qty, str):
+        return None
+
+    cleaned = fix_trailing_negative(raw_qty.strip().strip('()')).lstrip('-').rstrip(',').rstrip('.')
+    if not re.match(r'^\d{1,3}(?:\.\d{3})+\.\d{2}$', cleaned):
+        return None
+
+    tipo_key = str(tipo_instrumento or '').strip().lower()
+    if not any(token in tipo_key for token in ['letra', 'titulo', 'título', 'obligacion']):
+        return None
+
+    return (cleaned, tipo_key, str(codigo or '').strip(), str(concertacion or '').strip())
+
+
+def _apply_raw_quantity_sign(raw_qty: str, quantity):
+    """Restaura el signo económico original del OCR al propagar cantidades reinterpretadas."""
+    try:
+        quantity_num = abs(float(quantity or 0))
+    except Exception:
+        return quantity
+
+    raw = str(raw_qty or '').strip()
+    is_negative = raw.startswith('(') or raw.startswith('-') or raw.endswith('-')
+    signed_qty = -quantity_num if is_negative else quantity_num
+    return int(signed_qty) if float(signed_qty).is_integer() else signed_qty
+
+
+def _normalize_lookup_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.strftime('%Y-%m-%d')
+    return re.sub(r'\s+', ' ', str(value).strip()).lower()
+
+
+def _normalize_lookup_codigo(value) -> str:
+    text = str(value or '').strip().upper()
+    if not text:
+        return ""
+
+    alnum = re.sub(r'[^0-9A-Z]+', '', text)
+    if not alnum:
+        return ""
+    if alnum.isdigit():
+        return str(int(alnum))
+    return alnum
+
+
+def _normalize_moneda_key(value) -> str:
+    text = _normalize_lookup_text(value)
+    if any(token in text for token in ['dolar', 'dólar', 'usd', 'cabl']):
+        return 'usd'
+    if any(token in text for token in ['peso', 'ars']):
+        return 'ars'
+    return text
+
+
+def _normalize_operacion_side(value) -> str:
+    text = _normalize_lookup_text(value)
+    if 'compra' in text:
+        return 'compra'
+    if 'venta' in text:
+        return 'venta'
+    return text
+
+
+def _build_resultado_match_keys(
+    codigo=None,
+    instrumento=None,
+    moneda=None,
+    concertacion=None,
+    liquidacion=None,
+    operacion=None,
+) -> List[Tuple[str, str, str, str, str]]:
+    moneda_key = _normalize_moneda_key(moneda)
+    concertacion_key = _normalize_lookup_text(concertacion)
+    liquidacion_key = _normalize_lookup_text(liquidacion)
+    operacion_key = _normalize_operacion_side(operacion)
+    codigo_key = _normalize_lookup_codigo(codigo)
+    instrumento_key = _normalize_lookup_text(instrumento)
+
+    if not moneda_key or not concertacion_key or not operacion_key:
+        return []
+
+    asset_keys = []
+    if codigo_key:
+        asset_keys.append(codigo_key)
+    if instrumento_key and instrumento_key not in asset_keys:
+        asset_keys.append(instrumento_key)
+
+    keys = []
+    for asset_key in asset_keys:
+        keys.append((asset_key, moneda_key, concertacion_key, liquidacion_key, operacion_key))
+        if liquidacion_key:
+            keys.append((asset_key, moneda_key, concertacion_key, '', operacion_key))
+    return keys
+
+
+def _is_resultado_rescue_supported_tipo(tipo_instrumento: str = "") -> bool:
+    tipo_key = _normalize_lookup_text(tipo_instrumento)
+    return any(token in tipo_key for token in ['letra', 'titulo', 'título', 'obligacion'])
+
+
+def _is_suspicious_truncated_boletos_quantity(raw_qty: str, tipo_instrumento: str = "") -> bool:
+    if not isinstance(raw_qty, str) or not _is_resultado_rescue_supported_tipo(tipo_instrumento):
+        return False
+
+    cleaned = fix_trailing_negative(raw_qty.strip().strip('()')).lstrip('-').rstrip(',').rstrip('.')
+    return bool(re.match(r'^\d{1,3}(?:\.\d{3})+,\d{2,3}$', cleaned))
+
+
+def _relative_bruto_error(quantity, precio, bruto) -> float:
+    try:
+        quantity_num = abs(float(quantity or 0))
+        precio_num = abs(float(precio or 0))
+        bruto_num = abs(float(bruto or 0))
+    except Exception:
+        return float('inf')
+
+    if quantity_num == 0 or precio_num == 0 or bruto_num == 0:
+        return float('inf')
+
+    return abs((quantity_num * precio_num) - bruto_num) / bruto_num
+
+
+def _build_resultado_ventas_quantity_lookup(wb: Workbook) -> Dict[Tuple[str, str, str, str, str], float]:
+    candidates: Dict[Tuple[str, str, str, str, str], Set[float]] = {}
+
+    for sheet_name in ('Resultado Ventas ARS', 'Resultado Ventas USD'):
+        if sheet_name not in wb.sheetnames:
+            continue
+
+        ws = wb[sheet_name]
+        headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
+
+        codigo_col = None
+        instrumento_col = None
+        moneda_col = None
+        concertacion_col = None
+        liquidacion_col = None
+        operacion_col = None
+        cantidad_col = None
+
+        for idx, header in enumerate(headers, start=1):
+            if 'cod' in header and 'instrum' in header:
+                codigo_col = idx
+            elif header == 'instrumento':
+                instrumento_col = idx
+            elif header == 'moneda':
+                moneda_col = idx
+            elif 'concert' in header:
+                concertacion_col = idx
+            elif 'liquid' in header:
+                liquidacion_col = idx
+            elif header in ('tipo operación', 'tipo operacion'):
+                operacion_col = idx
+            elif header == 'cantidad':
+                cantidad_col = idx
+
+        if not all([moneda_col, concertacion_col, operacion_col, cantidad_col]):
+            continue
+
+        for row in range(2, ws.max_row + 1):
+            quantity_value = ws.cell(row, cantidad_col).value
+            try:
+                quantity_num = abs(float(quantity_value or 0))
+            except Exception:
+                parsed_quantity = parse_parentheses_negative(str(quantity_value or '').strip())
+                if parsed_quantity is None:
+                    continue
+                quantity_num = abs(float(parsed_quantity))
+
+            if quantity_num == 0:
+                continue
+
+            keys = _build_resultado_match_keys(
+                codigo=ws.cell(row, codigo_col).value if codigo_col else None,
+                instrumento=ws.cell(row, instrumento_col).value if instrumento_col else None,
+                moneda=ws.cell(row, moneda_col).value,
+                concertacion=ws.cell(row, concertacion_col).value,
+                liquidacion=ws.cell(row, liquidacion_col).value if liquidacion_col else None,
+                operacion=ws.cell(row, operacion_col).value,
+            )
+            for key in keys:
+                candidates.setdefault(key, set()).add(quantity_num)
+
+    return {key: next(iter(values)) for key, values in candidates.items() if len(values) == 1}
+
+
+def _rescue_boletos_quantity_from_resultado(
+    raw_qty: str,
+    best_qty,
+    precio,
+    bruto,
+    tipo_instrumento: str = "",
+    codigo=None,
+    instrumento=None,
+    moneda=None,
+    concertacion=None,
+    liquidacion=None,
+    operacion=None,
+    resultado_qty_lookup: Optional[Dict[Tuple[str, str, str, str, str], float]] = None,
+):
+    if not resultado_qty_lookup or not _is_suspicious_truncated_boletos_quantity(raw_qty, tipo_instrumento):
+        return best_qty
+
+    keys = _build_resultado_match_keys(codigo, instrumento, moneda, concertacion, liquidacion, operacion)
+    rescued_abs = None
+    for key in keys:
+        candidate = resultado_qty_lookup.get(key)
+        if candidate is None:
+            continue
+        if rescued_abs is not None and abs(rescued_abs - candidate) > 1e-6:
+            return best_qty
+        rescued_abs = candidate
+
+    if rescued_abs is None:
+        return best_qty
+
+    try:
+        best_abs = abs(float(best_qty or 0))
+    except Exception:
+        return best_qty
+
+    if best_abs == 0:
+        return best_qty
+
+    rescue_options = [rescued_abs]
+    rescue_options.append(rescued_abs / 1000)
+
+    current_error = _relative_bruto_error(best_qty, precio, bruto)
+    best_rescued_qty = None
+    best_rescued_error = None
+
+    for rescue_abs in rescue_options:
+        ratio = rescue_abs / best_abs
+        if ratio < 800 or ratio > 1200:
+            continue
+
+        rescued_qty = _apply_raw_quantity_sign(raw_qty, rescue_abs)
+        rescued_error = _relative_bruto_error(rescued_qty, precio, bruto)
+        if best_rescued_error is None or rescued_error < best_rescued_error:
+            best_rescued_error = rescued_error
+            best_rescued_qty = rescued_qty
+
+    if best_rescued_qty is None:
+        return best_qty
+
+    if best_rescued_error is not None and best_rescued_error < current_error:
+        return best_rescued_qty
+
+    return best_rescued_qty
+
+
+def _parse_ambiguous_quantity_candidates(value: str, precio=None, tipo_instrumento: str = "", moneda: str = "") -> List[float]:
     """Genera candidatos para cantidades OCR ambiguas como 150.000,000 o 166.000,0000."""
     if not value or not isinstance(value, str):
         return []
@@ -211,26 +482,31 @@ def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
     cleaned = fix_trailing_negative(cleaned)
     cleaned = cleaned.lstrip('-').rstrip(',').rstrip('.')
 
-    match = re.match(r'^(\d{1,3}(?:\.\d{3})*),(\d{3,4})$', cleaned)
-    if not match:
-        return []
-
-    decimal_group = match.group(2)
-    if set(decimal_group) != {'0'}:
-        return []
-
-    integer_digits = match.group(1).replace('.', '')
     sign = -1 if is_negative else 1
-
     candidates = []
-    try:
-        candidates.append(sign * float(f"{integer_digits}.0"))
-    except Exception:
-        pass
-    try:
-        candidates.append(sign * float(integer_digits + decimal_group))
-    except Exception:
-        pass
+
+    match = re.match(r'^(\d{1,3}(?:\.\d{3})*),(\d{3,4})$', cleaned)
+    if match:
+        decimal_group = match.group(2)
+        if set(decimal_group) == {'0'}:
+            integer_digits = match.group(1).replace('.', '')
+            try:
+                candidates.append(sign * float(f"{integer_digits}.0"))
+            except Exception:
+                pass
+            try:
+                candidates.append(sign * float(integer_digits + decimal_group))
+            except Exception:
+                pass
+
+    dotted_tail = re.match(r'^(\d{1,3}(?:\.\d{3})+)\.(\d{2})$', cleaned)
+    if dotted_tail and _is_micro_usd_quantity_context(precio, tipo_instrumento, moneda):
+        integer_digits = dotted_tail.group(1).replace('.', '')
+        decimal_group = dotted_tail.group(2)
+        try:
+            candidates.append(sign * float(integer_digits + decimal_group + '0'))
+        except Exception:
+            pass
 
     # De-duplicate preserving order
     deduped = []
@@ -240,9 +516,9 @@ def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
     return deduped
 
 
-def _choose_best_boletos_quantity(raw_qty: str, parsed_qty, precio, bruto):
+def _choose_best_boletos_quantity(raw_qty: str, parsed_qty, precio, bruto, tipo_instrumento: str = "", moneda: str = ""):
     """Elige la cantidad que mejor cierra con Precio x Cantidad ~= Bruto."""
-    candidates = _parse_ambiguous_quantity_candidates(raw_qty)
+    candidates = _parse_ambiguous_quantity_candidates(raw_qty, precio, tipo_instrumento, moneda)
     if not candidates:
         return parsed_qty
 
@@ -897,7 +1173,11 @@ def is_integer_column(header: str) -> bool:
     return False
 
 
-def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
+def process_visual_sheet(
+    ws: Worksheet,
+    sheet_name: str,
+    resultado_qty_lookup: Optional[Dict[Tuple[str, str, str, str, str], float]] = None,
+) -> None:
     """
     Process a Visual format sheet:
     - Convert parentheses to negative numbers
@@ -909,10 +1189,20 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
     
     headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
     headers_lower = [str(h or '').strip().lower() for h in headers]
+    raw_values_by_row = {
+        row: [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
+        for row in range(2, ws.max_row + 1)
+    }
 
     cantidad_col = None
     precio_col = None
     bruto_col = None
+    moneda_col = None
+    codigo_col = None
+    concertacion_col = None
+    liquidacion_col = None
+    instrumento_col = None
+    operacion_col = None
     if sheet_name.lower() == 'boletos':
         for idx, header_str in enumerate(headers_lower, start=1):
             if header_str == 'cantidad':
@@ -921,21 +1211,32 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                 precio_col = idx
             elif header_str == 'bruto':
                 bruto_col = idx
+            elif header_str == 'moneda':
+                moneda_col = idx
+            elif 'cod' in header_str and 'instrum' in header_str:
+                codigo_col = idx
+            elif 'concert' in header_str:
+                concertacion_col = idx
+            elif 'liquid' in header_str:
+                liquidacion_col = idx
+            elif header_str == 'instrumento':
+                instrumento_col = idx
+            elif header_str == 'tipo operación' or header_str == 'tipo operacion':
+                operacion_col = idx
 
     if sheet_name.lower() == 'boletos':
         tipo_col = None
-        oper_col = None
         for idx, header in enumerate(headers, start=1):
             header_str = str(header or '').strip().lower()
             if header_str == 'tipo de instrumento':
                 tipo_col = idx
             elif header_str == 'tipo operación' or header_str == 'tipo operacion':
-                oper_col = idx
+                operacion_col = idx
 
-        if tipo_col and oper_col:
+        if tipo_col and operacion_col:
             for row in range(2, ws.max_row + 1):
                 tipo_val = str(ws.cell(row, tipo_col).value or '').strip()
-                oper_val = str(ws.cell(row, oper_col).value or '').strip().lower()
+                oper_val = str(ws.cell(row, operacion_col).value or '').strip().lower()
                 needs_reclass = (not tipo_val) or ('sin datos' in tipo_val.lower())
                 if not needs_reclass or not oper_val:
                     continue
@@ -948,7 +1249,7 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                     ws.cell(row, tipo_col).value = 'Acciones'
     
     for row in range(2, ws.max_row + 1):
-        raw_row_values = [ws.cell(row, col).value for col in range(1, ws.max_column + 1)]
+        raw_row_values = raw_values_by_row[row]
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row, col)
             header = headers[col - 1] if col <= len(headers) else None
@@ -977,14 +1278,110 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                 if is_numeric_column(header_str) or is_integer_column(header_str):
                     cell.value = 0
 
-        if cantidad_col and precio_col and bruto_col:
+    if cantidad_col and precio_col and bruto_col:
+        propagated_candidates = {}
+
+        for row in range(2, ws.max_row + 1):
+            raw_row_values = raw_values_by_row[row]
             raw_qty = raw_row_values[cantidad_col - 1]
-            if isinstance(raw_qty, str):
-                qty_value = ws.cell(row, cantidad_col).value
-                precio_value = ws.cell(row, precio_col).value
-                bruto_value = ws.cell(row, bruto_col).value
-                best_qty = _choose_best_boletos_quantity(raw_qty, qty_value, precio_value, bruto_value)
-                ws.cell(row, cantidad_col).value = best_qty
+            if not isinstance(raw_qty, str):
+                continue
+
+            qty_value = ws.cell(row, cantidad_col).value
+            precio_value = ws.cell(row, precio_col).value
+            bruto_value = ws.cell(row, bruto_col).value
+            tipo_instrumento_value = ws.cell(row, tipo_col).value if tipo_col else ""
+            moneda_value = ws.cell(row, moneda_col).value if moneda_col else ""
+            codigo_value = ws.cell(row, codigo_col).value if codigo_col else ""
+            concertacion_value = ws.cell(row, concertacion_col).value if concertacion_col else ""
+            liquidacion_value = ws.cell(row, liquidacion_col).value if liquidacion_col else ""
+            instrumento_value = ws.cell(row, instrumento_col).value if instrumento_col else ""
+            operacion_value = ws.cell(row, operacion_col).value if operacion_col else ""
+            best_qty = _choose_best_boletos_quantity(
+                raw_qty,
+                qty_value,
+                precio_value,
+                bruto_value,
+                tipo_instrumento_value,
+                moneda_value,
+            )
+            best_qty = _rescue_boletos_quantity_from_resultado(
+                raw_qty,
+                best_qty,
+                precio_value,
+                bruto_value,
+                tipo_instrumento_value,
+                codigo_value,
+                instrumento_value,
+                moneda_value,
+                concertacion_value,
+                liquidacion_value,
+                operacion_value,
+                resultado_qty_lookup,
+            )
+
+            try:
+                parsed_abs = abs(float(qty_value or 0))
+                best_abs = abs(float(best_qty or 0))
+            except Exception:
+                parsed_abs = 0
+                best_abs = 0
+
+            group_key = _build_ambiguous_quantity_group_key(
+                raw_qty,
+                tipo_instrumento_value,
+                codigo_value,
+                concertacion_value,
+            )
+            if group_key and parsed_abs > 0 and best_abs >= parsed_abs * 100:
+                propagated_candidates[group_key] = abs(float(best_qty))
+
+        for row in range(2, ws.max_row + 1):
+            raw_row_values = raw_values_by_row[row]
+            raw_qty = raw_row_values[cantidad_col - 1]
+            if not isinstance(raw_qty, str):
+                continue
+
+            tipo_instrumento_value = ws.cell(row, tipo_col).value if tipo_col else ""
+            moneda_value = ws.cell(row, moneda_col).value if moneda_col else ""
+            codigo_value = ws.cell(row, codigo_col).value if codigo_col else ""
+            concertacion_value = ws.cell(row, concertacion_col).value if concertacion_col else ""
+            liquidacion_value = ws.cell(row, liquidacion_col).value if liquidacion_col else ""
+            instrumento_value = ws.cell(row, instrumento_col).value if instrumento_col else ""
+            operacion_value = ws.cell(row, operacion_col).value if operacion_col else ""
+            group_key = _build_ambiguous_quantity_group_key(
+                raw_qty,
+                tipo_instrumento_value,
+                codigo_value,
+                concertacion_value,
+            )
+
+            if group_key and group_key in propagated_candidates:
+                best_qty = _apply_raw_quantity_sign(raw_qty, propagated_candidates[group_key])
+            else:
+                best_qty = _choose_best_boletos_quantity(
+                    raw_qty,
+                    ws.cell(row, cantidad_col).value,
+                    ws.cell(row, precio_col).value,
+                    ws.cell(row, bruto_col).value,
+                    tipo_instrumento_value,
+                    moneda_value,
+                )
+                best_qty = _rescue_boletos_quantity_from_resultado(
+                    raw_qty,
+                    best_qty,
+                    ws.cell(row, precio_col).value,
+                    ws.cell(row, bruto_col).value,
+                    tipo_instrumento_value,
+                    codigo_value,
+                    instrumento_value,
+                    moneda_value,
+                    concertacion_value,
+                    liquidacion_value,
+                    operacion_value,
+                    resultado_qty_lookup,
+                )
+            ws.cell(row, cantidad_col).value = best_qty
 
 
 def process_precio_tenencias_sheet(ws: Worksheet) -> None:
@@ -1253,10 +1650,11 @@ def postprocess_visual_workbook(wb: Workbook) -> Workbook:
     Apply Visual format post-processing to a workbook.
     """
     console.print("\n[cyan]📐 Post-processing Visual format...[/cyan]")
+    resultado_qty_lookup = _build_resultado_ventas_quantity_lookup(wb)
     
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        process_visual_sheet(ws, sheet_name)
+        process_visual_sheet(ws, sheet_name, resultado_qty_lookup)
         if sheet_name.lower() == 'preciotenenciasiniciales':
             process_precio_tenencias_sheet(ws)
     

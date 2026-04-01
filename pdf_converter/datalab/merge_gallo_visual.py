@@ -171,6 +171,13 @@ class GalloVisualMerger:
     def _normalize_trade_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "", moneda_tipo: str = "") -> float:
         """Normaliza precios de trade respetando excepciones validadas por origen/capa."""
         price_num = self._to_float(price)
+        if (
+            moneda_tipo == "USD"
+            and self._is_visual_origin(origen)
+            and self._es_tipo_precio_cada_100(tipo_instrumento)
+            and 0 < abs(price_num) < 0.01
+        ):
+            return price_num
         if self._is_visual_usd_micro_price(price_num, tipo_instrumento, origen, moneda):
             return price_num
         if self._uses_visual_raw_trade_price(price_num, tipo_instrumento, origen, moneda):
@@ -309,6 +316,16 @@ class GalloVisualMerger:
         )
         visual_raw_nominal = f'Y(ESNUMERO(HALLAR("VISUAL";MAYUSC(A{row_out})));{tipo_checks};ABS(J{row_out})<20)'
         return f'=SI({visual_raw_nominal};J{row_out};SI({tipo_checks};J{row_out}/100;J{row_out}))'
+
+    def _build_usd_nominal_formula(self, row_out: int) -> str:
+        """Fórmula de Precio Nominal para Resultado Ventas USD alineada con la materialización Python."""
+        tipo_checks = (
+            f'O(ESNUMERO(HALLAR("OBLIGACION";MAYUSC(B{row_out})));'
+            f'ESNUMERO(HALLAR("TITULO";MAYUSC(B{row_out})));'
+            f'ESNUMERO(HALLAR("TÍTULO";MAYUSC(B{row_out})));'
+            f'ESNUMERO(HALLAR("LETRA";MAYUSC(B{row_out}))))'
+        )
+        return f'=SI({tipo_checks};SI(ABS(L{row_out})>=10;L{row_out}/100;L{row_out});L{row_out})'
 
     def _build_resultado_currency_overrides(self, boletos_ws) -> Dict[str, str]:
         """Asigna una única hoja ARS/USD por código para mantener íntegro el running stock."""
@@ -3188,8 +3205,8 @@ class GalloVisualMerger:
             # Col AB: Auditoría
             ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if requires_standard_100 else 'raw'} | L=K*O | GastosFuente={trans['gastos']}")
             
-            # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));L{row_out}/100;L{row_out})')
+            # Col AC (29): Precio Nominal USD con la misma regla económica que la materialización Python.
+            ws.cell(row_out, 29, self._build_usd_nominal_formula(row_out))
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados.
