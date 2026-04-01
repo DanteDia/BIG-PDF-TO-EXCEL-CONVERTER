@@ -3118,14 +3118,10 @@ class GalloVisualMerger:
             # Col P: Valor USD Dia - VLOOKUP con fecha
             ws.cell(row_out, 16, f'={_si_error(f"BUSCARV(E{row_out};'Cotizacion Dolar Historica'!A:B;2;FALSO)", "0")}')
             
-            valor_usd_dia = trans['tipo_cambio']
-            gastos_usd_value = self._convert_usd_sheet_gastos(
-                trans['gastos'],
-                self._get_usd_conversion_factor(moneda_val, valor_usd_dia),
-            )
+            gastos_fuente_formula = self._fmt_num_es(self._to_float(trans['gastos']))
 
-            # Col Q: Gastos USD ya convertidos para que la hoja no mezcle ARS/USD.
-            ws.cell(row_out, 17, gastos_usd_value)
+            # Col Q: Gastos USD visibles, calculados desde el gasto fuente y el factor O.
+            ws.cell(row_out, 17, f'=ABS({gastos_fuente_formula}*O{row_out})')
 
             # Col R: IVA USD = Q * 0.1736
             ws.cell(row_out, 18, f'=Q{row_out}*0,1736')

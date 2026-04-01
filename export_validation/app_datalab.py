@@ -342,13 +342,16 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         wb_formulas.save(merged_excel_path)
                         wb_values.save(merged_values_path)
                         
-                        # Read bytes for download (version with formulas for user)
+                        # Read bytes for download. Users should receive the materialized workbook
+                        # so Excel and PDF show the same resolved values.
                         with open(merged_excel_path, "rb") as f:
-                            results['merged'] = f.read()
+                            results['merged_formulas'] = f.read()
                         
-                        # Read bytes of values version for PDF export
+                        # Read bytes of values version for user download and PDF export
                         with open(merged_values_path, "rb") as f:
-                            results['merged_values'] = f.read()
+                            merged_values_bytes = f.read()
+                            results['merged'] = merged_values_bytes
+                            results['merged_values'] = merged_values_bytes
                         
                         # Store values workbook in session for PDF generation
                         st.session_state.merged_values_wb = wb_values
@@ -469,6 +472,17 @@ if st.session_state.processed_files is not None:
             type="primary",
             key='download_merged'
         )
+
+        if 'merged_formulas' in st.session_state.processed_files:
+            formulas_filename = merged_filename.replace('.xlsx', '_formulas.xlsx')
+            st.download_button(
+                label="📥 Descargar Resumen Impositivo (Excel con fórmulas)",
+                data=st.session_state.processed_files['merged_formulas'],
+                file_name=formulas_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key='download_merged_formulas'
+            )
         
         # ==================== EXPORTAR A PDF ====================
         st.markdown("---")
