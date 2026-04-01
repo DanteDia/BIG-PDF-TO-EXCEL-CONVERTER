@@ -204,6 +204,35 @@ class GalloVisualMerger:
         calc_far_below_source = source_ref > 0 and calc_ref <= source_ref * 0.1
         return source_material and (calc_collapsed or calc_far_below_source)
 
+    def _convert_usd_sheet_gastos(self, gastos, tipo_cambio) -> float:
+        """Convierte gastos de la hoja USD a USD económico usando valor absoluto."""
+        gastos_num = self._to_float(gastos)
+        tipo_cambio_num = self._to_float(tipo_cambio)
+        if tipo_cambio_num <= 0:
+            tipo_cambio_num = 1.0
+        return abs(gastos_num * tipo_cambio_num)
+
+    def _get_usd_conversion_factor(self, moneda: str, valor_usd_dia) -> float:
+        """Devuelve el factor para llevar monetarios de la hoja USD a USD."""
+        moneda_text = str(moneda or "").lower()
+        if 'dolar' in moneda_text:
+            return 1.0
+
+        valor_usd = self._to_float(valor_usd_dia)
+        if valor_usd > 0:
+            return 1.0 / valor_usd
+        return 1.0
+
+    def _apply_signed_expense(self, bruto, gastos_abs, cantidad) -> float:
+        """Empuja el neto más lejos de cero según el signo económico de la operación."""
+        bruto_num = self._to_float(bruto)
+        gastos_num = abs(self._to_float(gastos_abs))
+        cantidad_num = self._to_float(cantidad)
+        is_sale = cantidad_num < 0 or (cantidad_num == 0 and bruto_num < 0)
+        if is_sale:
+            return bruto_num - gastos_num
+        return bruto_num + gastos_num
+
     def _normalize_usd_result_nominal_price(self, nominal_price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> float:
         """Convierte a precio económico unitario para Resultado Ventas USD.
 
@@ -1389,13 +1418,13 @@ class GalloVisualMerger:
                 bruto_usd = cantidad * precio_resultado_usd
                 ws.cell(row, 13, bruto_usd)
                 
-                # Dividir gastos e intereses por 100 para ON/TP/Letras
+                # Los gastos en la hoja USD son monetarios fuente; no deben desescalarse por precio cada 100.
                 if es_precio_cada_100:
-                    gastos = gastos / 100
                     interes = interes / 100
                     # Actualizar celdas con valores divididos
                     ws.cell(row, 14, interes)  # Col N = Interés
-                    ws.cell(row, 17, gastos)   # Col Q = Gastos
+                gastos_usd = self._convert_usd_sheet_gastos(gastos, tipo_cambio)
+                ws.cell(row, 17, gastos_usd)  # Col Q = Gastos USD visibles
                 
                 # Columnas de running stock: T(20)-Z(26)
                 col_stock_ini_qty = 20   # T
@@ -1444,7 +1473,7 @@ class GalloVisualMerger:
                     neto = bruto + interes  # Bruto (con precio nominal) + Interés
                 else:  # USD
                     costo = cantidad * precio_stock_inicial  # negativo, precio ya nominal y USD
-                    neto = bruto_usd - gastos  # M - Q
+                    neto = self._apply_signed_expense(bruto_usd, gastos_usd, cantidad)
                 # Resultado = IF(Costo<>0, ABS(Neto)-ABS(Costo), 0)
                 resultado = abs(neto) - abs(costo) if costo != 0 else 0
             else:  # COMPRA
@@ -1452,7 +1481,7 @@ class GalloVisualMerger:
                 if moneda_tipo == "ARS":
                     neto = bruto + interes
                 else:
-                    neto = bruto_usd + interes
+                    neto = self._apply_signed_expense(bruto_usd, gastos_usd, cantidad)
                 resultado = 0  # No hay resultado en compras
             
             # Actualizar stock para la próxima fila
@@ -1482,11 +1511,8 @@ class GalloVisualMerger:
                     iva = gastos * -0.1736
                 ws.cell(row, 15, iva)
             else:  # USD
-                # Col R (18): IVA = IF(Q>0, Q*0.1736, Q*-0.1736)
-                if gastos > 0:
-                    iva = gastos * 0.1736
-                else:
-                    iva = gastos * -0.1736
+                # Col R (18): IVA = ABS(Gastos USD) * 0.1736
+                iva = gastos_usd * 0.1736 if gastos_usd > 0 else 0
                 ws.cell(row, 18, iva)
             
             # Running stock columns
@@ -1912,6 +1938,7 @@ class GalloVisualMerger:
         
         # Recolectar todas las transacciones para ordenar
         all_transactions = []
+        seen_gallo_transactions = set()
         
         # Procesar hojas de Gallo
         for sheet_name in self.gallo_wb.sheetnames:
@@ -1992,6 +2019,22 @@ class GalloVisualMerger:
                 
                 # Convertir fecha a datetime para Excel
                 fecha_dt, _ = self._parse_fecha(fecha)
+
+                dedupe_key = (
+                    sheet_name,
+                    fecha_dt if fecha_dt else str(fecha),
+                    str(numero or '').strip(),
+                    str(cod_num or '').strip(),
+                    str(moneda or '').strip().lower(),
+                    operacion_lower,
+                    self._to_float(cantidad),
+                    self._to_float(precio),
+                    self._to_float(gastos),
+                    str(especie or '').strip().upper(),
+                )
+                if dedupe_key in seen_gallo_transactions:
+                    continue
+                seen_gallo_transactions.add(dedupe_key)
                 
                 # Auditoría
                 auditoria = f"Origen: Gallo-{sheet_name} | Fecha: {fecha} | Cod: {cod_especie} | Op: {operacion}"
@@ -2911,7 +2954,7 @@ class GalloVisualMerger:
                    'Concertación', 'Liquidación', 'Moneda', 'Tipo Operación',
                    'Cantidad', 'Precio', 'Precio Standarizado', 'Precio Standarizado en USD',
                    'Bruto en USD', 'Interés', 'Tipo de Cambio', 'Valor USD Dia',
-                   'Gastos', 'IVA', 'Resultado', 'Cantidad Stock Inicial',
+               'Gastos USD', 'IVA USD', 'Resultado', 'Cantidad Stock Inicial',
                    'Precio Stock USD', 'Costo por venta(gallo)', 'Neto Calculado(visual)',
                    'Resultado Calculado(final)', 'Cantidad de Stock Final',
                    'Precio Stock Final', 'Explicación T-Z', 'Auditoría', 'Precio Nominal']
@@ -3075,11 +3118,17 @@ class GalloVisualMerger:
             # Col P: Valor USD Dia - VLOOKUP con fecha
             ws.cell(row_out, 16, f'={_si_error(f"BUSCARV(E{row_out};'Cotizacion Dolar Historica'!A:B;2;FALSO)", "0")}')
             
-            # Col Q: Gastos
-            ws.cell(row_out, 17, trans['gastos'])
-            
-            # Col R: IVA = SI(Q>0, Q*0.1736, Q*-0.1736) basado en Gastos (col Q)
-            ws.cell(row_out, 18, f'=SI(Q{row_out}>0;Q{row_out}*0,1736;Q{row_out}*-0,1736)')
+            valor_usd_dia = trans['tipo_cambio']
+            gastos_usd_value = self._convert_usd_sheet_gastos(
+                trans['gastos'],
+                self._get_usd_conversion_factor(moneda_val, valor_usd_dia),
+            )
+
+            # Col Q: Gastos USD ya convertidos para que la hoja no mezcle ARS/USD.
+            ws.cell(row_out, 17, gastos_usd_value)
+
+            # Col R: IVA USD = Q * 0.1736
+            ws.cell(row_out, 18, f'=Q{row_out}*0,1736')
             
             # Col S: Resultado (vacío)
             ws.cell(row_out, 19, "")
@@ -3122,8 +3171,8 @@ class GalloVisualMerger:
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)
             ws.cell(row_out, 22, f'=SI(I{row_out}<0;I{row_out}*U{row_out};0)')
             
-            # Col W: Neto Calculado = Bruto USD - Gastos
-            ws.cell(row_out, 23, f'=M{row_out}-Q{row_out}')
+            # Col W: Neto Calculado = Bruto USD +/- Gastos USD según signo económico
+            ws.cell(row_out, 23, f'=SI(I{row_out}<0;M{row_out}-Q{row_out};M{row_out}+Q{row_out})')
             
             # Col X: Resultado Calculado = |Neto| - |Costo|
             ws.cell(row_out, 24, f'=SI(V{row_out}<>0;ABS(W{row_out})-ABS(V{row_out});0)')
@@ -3137,11 +3186,11 @@ class GalloVisualMerger:
             
             # Col AA: Explicación T-Z
             cantidad_val = trans['cantidad'] or 0
-            explicacion_full = f"{explicacion_t} | U=PrecioPos/P{row_out} | V={cantidad_val}*U si venta | W=M-Q | X=|W|-|V| | Y=I+T | Z=Promedio"
+            explicacion_full = f"{explicacion_t} | U=PrecioPos/P{row_out} | V={cantidad_val}*U si venta | Q=GastosUSD | W=M +/- Q segun signo | X=|W|-|V| | Y=I+T | Z=Promedio"
             ws.cell(row_out, 27, explicacion_full)
             
             # Col AB: Auditoría
-            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if requires_standard_100 else 'raw'} | L=K*O")
+            ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if requires_standard_100 else 'raw'} | L=K*O | GastosFuente={trans['gastos']}")
             
             # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
             ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));L{row_out}/100;L{row_out})')
