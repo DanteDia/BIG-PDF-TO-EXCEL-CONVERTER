@@ -229,17 +229,25 @@ class MarkdownTableParser:
         return tables
 
     def _parse_first_table_as(self, section_name: str) -> dict[str, TableData]:
-        """Parsea la primera tabla encontrada y la guarda con el nombre indicado."""
+        """Parsea todas las tablas encontradas y las fusiona bajo el nombre indicado."""
         lines = self.content.split('\n')
         current_headers = None
         current_rows = []
         in_table = False
 
+        def flush_current_table():
+            nonlocal current_headers, current_rows, in_table
+            if current_headers:
+                self._save_table(section_name, current_headers, current_rows)
+            current_headers = None
+            current_rows = []
+            in_table = False
+
         for i, line in enumerate(lines):
             line = line.strip()
             if not line.startswith('|'):
                 if in_table and current_headers:
-                    break
+                    flush_current_table()
                 continue
 
             cells = self._parse_table_row(line)
@@ -256,8 +264,7 @@ class MarkdownTableParser:
                 if not all(c.strip() in ['', '.'] for c in cells):
                     current_rows.append(cells)
 
-        if current_headers:
-            self._save_table(section_name, current_headers, current_rows)
+        flush_current_table()
 
         return self.tables
     
