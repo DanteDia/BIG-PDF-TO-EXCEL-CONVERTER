@@ -246,6 +246,90 @@ class GalloVisualMerger:
             return 0.0
         return gross / qty
 
+    def _date_key(self, value) -> str:
+        """Normaliza fechas para poder vincular legs del mismo boleto entre hojas."""
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _meaningful_fx_rate(self, tipo_cambio) -> float:
+        """Filtra tipos de cambio fuente que realmente representan una conversión de monedas."""
+        tipo_cambio_num = abs(self._to_float(tipo_cambio))
+        if tipo_cambio_num > 1:
+            return tipo_cambio_num
+        return 0.0
+
+    def _build_visual_source_fx_map(self, boletos_ws) -> Dict[int, float]:
+        """Busca el TC bruto utilizable por fila Visual, incluso heredándolo del leg apareado."""
+        exact_groups: Dict[Tuple[str, str, str, str], List[float]] = {}
+        loose_groups: Dict[Tuple[str, str, str], List[float]] = {}
+        row_meta = []
+
+        for row in range(2, boletos_ws.max_row + 1):
+            origen = boletos_ws.cell(row, 17).value
+            if not self._is_visual_origin(origen):
+                continue
+
+            cod_instrum = boletos_ws.cell(row, 7).value
+            cod_clean = self._clean_codigo(str(cod_instrum)) if cod_instrum else None
+            if not cod_clean:
+                continue
+
+            concertacion_key = self._date_key(boletos_ws.cell(row, 2).value)
+            liquidacion_key = self._date_key(boletos_ws.cell(row, 3).value)
+            cantidad_abs = abs(self._to_float(boletos_ws.cell(row, 10).value))
+            cantidad_key = f"{cantidad_abs:.10f}"
+            tipo_cambio = self._meaningful_fx_rate(boletos_ws.cell(row, 12).value)
+
+            exact_key = (cod_clean, concertacion_key, liquidacion_key, cantidad_key)
+            loose_key = (cod_clean, concertacion_key, liquidacion_key)
+            if tipo_cambio > 0:
+                exact_groups.setdefault(exact_key, []).append(tipo_cambio)
+                loose_groups.setdefault(loose_key, []).append(tipo_cambio)
+
+            row_meta.append((row, tipo_cambio, exact_key, loose_key))
+
+        row_fx_map: Dict[int, float] = {}
+        for row, own_tipo_cambio, exact_key, loose_key in row_meta:
+            if own_tipo_cambio > 0:
+                row_fx_map[row] = own_tipo_cambio
+                continue
+
+            exact_candidates = exact_groups.get(exact_key, [])
+            if exact_candidates:
+                row_fx_map[row] = exact_candidates[0]
+                continue
+
+            loose_candidates = list(dict.fromkeys(loose_groups.get(loose_key, [])))
+            if len(loose_candidates) == 1:
+                row_fx_map[row] = loose_candidates[0]
+
+        return row_fx_map
+
+    def _normalize_ars_result_nominal_price(self, price, tipo_instrumento: str, origen: str = "",
+                                            moneda: str = "", tipo_cambio=1) -> float:
+        """Convierte a precio nominal ARS usando el TC fuente de Visual cuando existe."""
+        price_num = self._to_float(price)
+        if not price_num:
+            return 0.0
+
+        if self._is_visual_origin(origen) and self._is_dollar_related(moneda):
+            tipo_cambio_num = abs(self._to_float(tipo_cambio))
+            if tipo_cambio_num <= 0:
+                tipo_cambio_num = 1.0
+            converted_price = price_num * tipo_cambio_num
+            if self._is_visual_usd_micro_price(price_num, tipo_instrumento, origen, moneda):
+                return converted_price
+            if self._uses_visual_raw_trade_price(price_num, tipo_instrumento, origen, moneda):
+                return converted_price
+            return self._normalize_nominal_price(converted_price, tipo_instrumento, origen, "ARS")
+
+        return self._normalize_trade_price(price_num, tipo_instrumento, origen, moneda, "ARS")
+
     def _convert_usd_sheet_gastos(self, gastos, tipo_cambio) -> float:
         """Convierte gastos de la hoja USD a USD económico usando valor absoluto."""
         gastos_num = self._to_float(gastos)
@@ -342,15 +426,31 @@ class GalloVisualMerger:
         return self._normalize_nominal_price(price_num, tipo_instrumento)
 
     def _build_ars_nominal_formula(self, row_out: int) -> str:
-        """Fórmula de Precio Nominal para Resultado Ventas ARS con excepción Visual ARS ya nominal."""
+        """Fórmula de Precio Nominal para Resultado Ventas ARS usando TC fuente de Visual cuando aplica."""
         tipo_checks = (
             f'O(ESNUMERO(HALLAR("OBLIGACION";MAYUSC(B{row_out})));'
             f'ESNUMERO(HALLAR("TITULO";MAYUSC(B{row_out})));'
             f'ESNUMERO(HALLAR("TÍTULO";MAYUSC(B{row_out})));'
             f'ESNUMERO(HALLAR("LETRA";MAYUSC(B{row_out}))))'
         )
-        visual_raw_nominal = f'Y(ESNUMERO(HALLAR("VISUAL";MAYUSC(A{row_out})));{tipo_checks};ABS(J{row_out})<20)'
-        return f'=SI({visual_raw_nominal};J{row_out};SI({tipo_checks};J{row_out}/100;J{row_out}))'
+        is_visual = f'ESNUMERO(HALLAR("VISUAL";MAYUSC(A{row_out})))'
+        is_dollar_source = (
+            f'O(ESNUMERO(HALLAR("DOLAR";MAYUSC(G{row_out})));'
+            f'ESNUMERO(HALLAR("DÓLAR";MAYUSC(G{row_out})));'
+            f'ESNUMERO(HALLAR("USD";MAYUSC(G{row_out})));'
+            f'ESNUMERO(HALLAR("MEP";MAYUSC(G{row_out})));'
+            f'ESNUMERO(HALLAR("CABLE";MAYUSC(G{row_out}))))'
+        )
+        base_price = f'SI(Y({is_visual};{is_dollar_source};M{row_out}>0);J{row_out}*M{row_out};J{row_out})'
+        visual_raw_nominal = (
+            f'Y({is_visual};{tipo_checks};'
+            f'O('
+            f'Y(NO({is_dollar_source});ABS(J{row_out})<20);'
+            f'Y(NO({is_dollar_source});ABS(J{row_out})>=100);'
+            f'Y({is_dollar_source};ABS(J{row_out})<2)'
+            f'))'
+        )
+        return f'=SI({visual_raw_nominal};{base_price};SI({tipo_checks};{base_price}/100;{base_price}))'
 
     def _build_resultado_currency_overrides(self, boletos_ws) -> Dict[str, str]:
         """Asigna una única hoja ARS/USD por código para mantener íntegro el running stock."""
@@ -1386,11 +1486,18 @@ class GalloVisualMerger:
             if moneda_tipo == "ARS":
                 precio_original = self._to_float(ws.cell(row, 10).value)   # Col J = Precio
                 interes = self._to_float(ws.cell(row, 12).value)  # Col L = Interés
+                tipo_cambio = self._to_float(ws.cell(row, 13).value)  # Col M = Tipo de Cambio
                 gastos = self._to_float(ws.cell(row, 14).value)   # Col N = Gastos
                 
                 # Calcular Precio Nominal
                 moneda_val = ws.cell(row, 7).value  # Col G = Moneda
-                precio_nominal = self._normalize_trade_price(precio_original, tipo_instrumento, origen, moneda_val, moneda_tipo)
+                precio_nominal = self._normalize_ars_result_nominal_price(
+                    precio_original,
+                    tipo_instrumento,
+                    origen,
+                    moneda_val,
+                    tipo_cambio,
+                )
                 current_nominal_price = precio_nominal
                 ws.cell(row, col_precio_nominal, precio_nominal)
                 
@@ -2140,6 +2247,7 @@ class GalloVisualMerger:
                 instrumento = visual_boletos.cell(row, 8).value
                 cantidad = visual_boletos.cell(row, 9).value
                 precio = visual_boletos.cell(row, 10).value
+                tipo_cambio_fuente = visual_boletos.cell(row, 11).value
                 bruto_fuente = visual_boletos.cell(row, 12).value
                 interes = visual_boletos.cell(row, 13).value
                 gastos = visual_boletos.cell(row, 14).value
@@ -2173,6 +2281,7 @@ class GalloVisualMerger:
                     'especie': instrumento,
                     'cantidad': cantidad,
                     'precio': precio,
+                    'tipo_cambio_fuente': tipo_cambio_fuente,
                     'bruto_fuente': bruto_fuente,
                     'interes': interes if interes else 0,
                     'gastos': gastos if gastos else 0,
@@ -2204,8 +2313,12 @@ class GalloVisualMerger:
             instrumento_con_moneda = f'=SI(ESERROR(BUSCARV(G{row_out};EspeciesVisual!C:Q;15;FALSO));"";BUSCARV(G{row_out};EspeciesVisual!C:Q;15;FALSO))'
             
             # Tipo Cambio: fórmula simplificada compatible con Excel 2013 español
-            # Usa VLOOKUP simple por fecha (asumiendo que Cotización tiene fecha en col A, valor en col B)
-            tipo_cambio = f'=SI(E{row_out}="Pesos";1;SI(ESERROR(BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO));0;BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO)))'
+            # Usa el TC crudo de Visual cuando existe; si no, cae al histórico.
+            tipo_cambio_fuente = self._to_float(trans.get('tipo_cambio_fuente'))
+            if self._is_visual_origin(trans.get('origen')) and tipo_cambio_fuente > 0:
+                tipo_cambio = tipo_cambio_fuente
+            else:
+                tipo_cambio = f'=SI(E{row_out}="Pesos";1;SI(ESERROR(BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO));0;BUSCARV(B{row_out};\'Cotizacion Dolar Historica\'!A:B;2;FALSO)))'
             
             # Precio Nominal: dividir por 100 si es ON, Títulos Públicos o Letras del Tesoro
             # Busca en el Tipo de Instrumento (col A) si contiene Obligacion, Titulo/Título o Letra
@@ -2791,6 +2904,7 @@ class GalloVisualMerger:
         # Recolectar transacciones de Boletos con moneda == "Pesos"
         boletos_ws = wb['Boletos']
         currency_overrides = self._build_resultado_currency_overrides(boletos_ws)
+        visual_fx_map = self._build_visual_source_fx_map(boletos_ws)
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
@@ -2840,6 +2954,7 @@ class GalloVisualMerger:
             gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
             bruto_fuente = boletos_ws.cell(boletos_row, 13).value  # Col M
             neto_fuente = boletos_ws.cell(boletos_row, 16).value  # Col P
+            tipo_cambio_boletos = boletos_ws.cell(boletos_row, 12).value  # Col L
             especie_raw = boletos_ws.cell(boletos_row, 8).value  # Col H - instrumento crudo
             
             # Calcular Bruto = Cantidad * Precio
@@ -2848,8 +2963,11 @@ class GalloVisualMerger:
             except:
                 bruto = 0
             
-            # Tipo de cambio: para Pesos siempre es 1
-            tipo_cambio = 1
+            tipo_cambio = visual_fx_map.get(boletos_row)
+            if tipo_cambio is None:
+                tipo_cambio = self._to_float(tipo_cambio_boletos)
+            if not tipo_cambio:
+                tipo_cambio = 1
             
             transactions.append({
                 'origen': origen,
@@ -3037,6 +3155,7 @@ class GalloVisualMerger:
         # Recolectar transacciones de Boletos con moneda contiene "Dolar"
         boletos_ws = wb['Boletos']
         currency_overrides = self._build_resultado_currency_overrides(boletos_ws)
+        visual_fx_map = self._build_visual_source_fx_map(boletos_ws)
         transactions = []
         
         for boletos_row in range(2, boletos_ws.max_row + 1):
@@ -3084,13 +3203,17 @@ class GalloVisualMerger:
             gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
             bruto_fuente = boletos_ws.cell(boletos_row, 13).value  # Col M
             neto_fuente = boletos_ws.cell(boletos_row, 16).value  # Col P
+            tipo_cambio_boletos = boletos_ws.cell(boletos_row, 12).value  # Col L
             especie_raw = boletos_ws.cell(boletos_row, 8).value  # Col H - instrumento crudo
             
-            # Buscar cotización dólar para esta fecha
-            tipo_cambio = 1
-            if isinstance(concertacion, datetime):
+            tipo_cambio = visual_fx_map.get(boletos_row)
+            if tipo_cambio is None:
+                tipo_cambio = self._to_float(tipo_cambio_boletos)
+            if not tipo_cambio and isinstance(concertacion, datetime):
                 fecha_key = concertacion.strftime('%Y-%m-%d') if hasattr(concertacion, 'strftime') else str(concertacion)
                 tipo_cambio = self._cotizacion_cache.get(fecha_key, 1) or 1
+            if not tipo_cambio:
+                tipo_cambio = 1
             
             transactions.append({
                 'origen': origen,
@@ -3200,8 +3323,12 @@ class GalloVisualMerger:
             else:
                 ws.cell(row_out, 15, f'=SI(P{row_out}=0;1;1/P{row_out})')  # Pesos: 1/ValorUSDDia
             
-            # Col P: Valor USD Dia - VLOOKUP con fecha
-            ws.cell(row_out, 16, f'={_si_error(f"BUSCARV(E{row_out};'Cotizacion Dolar Historica'!A:B;2;FALSO)", "0")}')
+            # Col P: Valor USD Dia - preferir TC bruto de Visual cuando exista; si no, usar histórico.
+            visual_tc = self._meaningful_fx_rate(trans.get('tipo_cambio'))
+            if self._is_visual_origin(origen_val) and visual_tc > 0:
+                ws.cell(row_out, 16, visual_tc)
+            else:
+                ws.cell(row_out, 16, f'={_si_error(f"BUSCARV(E{row_out};'Cotizacion Dolar Historica'!A:B;2;FALSO)", "0")}')
             
             gastos_fuente_formula = self._fmt_num_es(self._to_float(trans['gastos']))
 
