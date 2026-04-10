@@ -62,6 +62,15 @@ class GalloVisualMerger:
         text = " ".join(str(v or "") for v in values).lower()
         return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
 
+    def _resultado_bucket_hint_from_origen(self, origen: str) -> Optional[str]:
+        """Da prioridad al bucket implícito del origen cuando la hoja fuente lo deja explícito."""
+        origen_text = str(origen or '').strip().lower()
+        if 'gallo-renta fija pesos' in origen_text:
+            return 'ARS'
+        if 'gallo-renta fija dolares' in origen_text or 'gallo-tit privados exterior' in origen_text:
+            return 'USD'
+        return None
+
     def _classify_rentas_currency(self, moneda, moneda_emision=None, origen: str = "") -> str:
         """Clasifica una renta/dividendo en ARS o USD priorizando la moneda efectiva de la fila."""
         origen_text = str(origen or '').strip().lower()
@@ -171,6 +180,9 @@ class GalloVisualMerger:
     def _normalize_trade_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "", moneda_tipo: str = "") -> float:
         """Normaliza precios de trade respetando excepciones validadas por origen/capa."""
         price_num = self._to_float(price)
+        if moneda_tipo == "USD" and self._is_visual_origin(origen) and self._es_tipo_precio_cada_100(tipo_instrumento):
+            if 0 < abs(price_num) < 0.01:
+                return price_num
         if self._is_visual_usd_micro_price(price_num, tipo_instrumento, origen, moneda):
             return price_num
         if self._uses_visual_raw_trade_price(price_num, tipo_instrumento, origen, moneda):
@@ -203,6 +215,36 @@ class GalloVisualMerger:
         calc_collapsed = calc_ref < 1
         calc_far_below_source = source_ref > 0 and calc_ref <= source_ref * 0.1
         return source_material and (calc_collapsed or calc_far_below_source)
+
+    def _should_preserve_visual_usd_micro_source_money(self, origen: str, moneda: str, tipo_instrumento: str,
+                                                       price, bruto_fuente: float, bruto_calc: float) -> bool:
+        """Preserva el bruto fuente en micro-precios Visual dolarizados cuando el cálculo diverge."""
+        if not self._is_visual_origin(origen):
+            return False
+        if not self._is_dollar_related(moneda):
+            return False
+        if not self._es_tipo_precio_cada_100(tipo_instrumento):
+            return False
+
+        price_num = abs(self._to_float(price))
+        if not (0 < price_num < 0.01):
+            return False
+
+        source_abs = abs(self._to_float(bruto_fuente))
+        calc_abs = abs(self._to_float(bruto_calc))
+        if source_abs <= 0 or calc_abs <= 0:
+            return False
+
+        relative_error = abs(calc_abs - source_abs) / source_abs
+        return relative_error > 0.02
+
+    def _effective_unit_price_from_bruto(self, cantidad, bruto) -> float:
+        """Deriva el precio unitario económico desde el bruto fuente cuando éste es más confiable."""
+        qty = abs(self._to_float(cantidad))
+        gross = abs(self._to_float(bruto))
+        if qty <= 0 or gross <= 0:
+            return 0.0
+        return gross / qty
 
     def _convert_usd_sheet_gastos(self, gastos, tipo_cambio) -> float:
         """Convierte gastos de la hoja USD a USD económico usando valor absoluto."""
@@ -323,9 +365,18 @@ class GalloVisualMerger:
             especie_data = self._especies_visual_cache.get(cod_clean, {})
             moneda = boletos_ws.cell(row, 5).value
             tipo_operacion = boletos_ws.cell(row, 6).value
+            origen = boletos_ws.cell(row, 17).value
             moneda_emision = especie_data.get('moneda_emision')
 
             state = grouped.setdefault(cod_clean, {'usd': False, 'ars': False})
+            explicit_bucket = self._resultado_bucket_hint_from_origen(origen)
+            if explicit_bucket == 'USD':
+                state['usd'] = True
+                continue
+            if explicit_bucket == 'ARS':
+                state['ars'] = True
+                continue
+
             if self._is_dollar_related(moneda, tipo_operacion, moneda_emision):
                 state['usd'] = True
 
@@ -1368,6 +1419,7 @@ class GalloVisualMerger:
                 precio_std_original = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado
                 interes = self._to_float(ws.cell(row, 14).value)  # Col N = Interés
                 gastos = self._to_float(ws.cell(row, 17).value)   # Col Q = Gastos (ya es valor)
+                bruto_fuente = self._to_float(ws.cell(row, 13).value)
                 
                 # Materializar P (Valor USD Día) - si es fórmula, calcular VLOOKUP
                 valor_usd_dia_cell = ws.cell(row, 16).value
@@ -1416,6 +1468,20 @@ class GalloVisualMerger:
                 
                 # Materializar M (Bruto USD) = I * Precio Nominal (ya en USD y ajustado)
                 bruto_usd = cantidad * precio_resultado_usd
+                preserve_micro_source = self._should_preserve_visual_usd_micro_source_money(
+                    origen,
+                    moneda_val,
+                    tipo_instrumento,
+                    precio_std_usd_raw,
+                    bruto_fuente,
+                    bruto_usd,
+                )
+                if preserve_micro_source:
+                    bruto_usd = bruto_fuente
+                    effective_unit_price = self._effective_unit_price_from_bruto(cantidad, bruto_usd)
+                    if effective_unit_price > 0:
+                        precio_resultado_usd = effective_unit_price
+                        current_nominal_price = effective_unit_price
                 ws.cell(row, 13, bruto_usd)
                 
                 # Los gastos en la hoja USD son monetarios fuente; no deben desescalarse por precio cada 100.
@@ -2772,6 +2838,8 @@ class GalloVisualMerger:
             precio = boletos_ws.cell(boletos_row, 11).value  # Col K
             interes = boletos_ws.cell(boletos_row, 14).value  # Col N
             gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
+            bruto_fuente = boletos_ws.cell(boletos_row, 13).value  # Col M
+            neto_fuente = boletos_ws.cell(boletos_row, 16).value  # Col P
             especie_raw = boletos_ws.cell(boletos_row, 8).value  # Col H - instrumento crudo
             
             # Calcular Bruto = Cantidad * Precio
@@ -3014,6 +3082,8 @@ class GalloVisualMerger:
             precio = boletos_ws.cell(boletos_row, 11).value  # Col K
             interes = boletos_ws.cell(boletos_row, 14).value  # Col N
             gastos = boletos_ws.cell(boletos_row, 15).value  # Col O
+            bruto_fuente = boletos_ws.cell(boletos_row, 13).value  # Col M
+            neto_fuente = boletos_ws.cell(boletos_row, 16).value  # Col P
             especie_raw = boletos_ws.cell(boletos_row, 8).value  # Col H - instrumento crudo
             
             # Buscar cotización dólar para esta fecha
@@ -3036,6 +3106,8 @@ class GalloVisualMerger:
                 'interes': interes if interes else 0,
                 'tipo_cambio': tipo_cambio,
                 'gastos': gastos if gastos else 0,
+                'bruto_fuente': bruto_fuente,
+                'neto_fuente': neto_fuente,
                 '_idx': boletos_row,
             })
 
@@ -3103,7 +3175,20 @@ class GalloVisualMerger:
             ws.cell(row_out, 12, f'=K{row_out}*O{row_out}')
             
             # Col M: Bruto en USD = Cantidad * Precio Nominal (col AC=29)
-            ws.cell(row_out, 13, f'=I{row_out}*AC{row_out}')
+            bruto_fuente = self._to_float(trans.get('bruto_fuente'))
+            bruto_calc = self._to_float(trans.get('cantidad')) * self._to_float(precio_val)
+            preserve_micro_source = self._should_preserve_visual_usd_micro_source_money(
+                origen_val,
+                trans['moneda'],
+                tipo_instrumento_val,
+                precio_val,
+                bruto_fuente,
+                bruto_calc,
+            )
+            if preserve_micro_source:
+                ws.cell(row_out, 13, bruto_fuente)
+            else:
+                ws.cell(row_out, 13, f'=I{row_out}*AC{row_out}')
             
             # Col N: Interés
             ws.cell(row_out, 14, trans['interes'])
@@ -3189,7 +3274,10 @@ class GalloVisualMerger:
             ws.cell(row_out, 28, f"Origen: {trans['origen']} | Cod: {cod} | K(PrecioStd)={'x100' if requires_standard_100 else 'raw'} | L=K*O | GastosFuente={trans['gastos']}")
             
             # Col AC (29): Precio Nominal = Precio Standarizado en USD (L) /100 si es ON, Títulos Públicos o Letras
-            ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));L{row_out}/100;L{row_out})')
+            if preserve_micro_source:
+                ws.cell(row_out, 29, f'=SI(I{row_out}=0;0;ABS(M{row_out}/I{row_out}))')
+            else:
+                ws.cell(row_out, 29, f'=SI(O(ESNUMERO(HALLAR("Obligacion";B{row_out}));ESNUMERO(HALLAR("Titulo";B{row_out}));ESNUMERO(HALLAR("Título";B{row_out}));ESNUMERO(HALLAR("Letra";B{row_out})));SI(ABS(L{row_out})>=10;L{row_out}/100;L{row_out});L{row_out})')
     
     def _create_rentas_dividendos_ars(self, wb: Workbook):
         """Crea hoja Rentas Dividendos ARS con valores reales filtrados y ordenados.
