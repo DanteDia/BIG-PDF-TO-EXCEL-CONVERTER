@@ -1406,6 +1406,20 @@ class GalloVisualMerger:
                 neto = neto_fuente
                 ws.cell(row, 13, bruto)
                 neto = neto_fuente
+
+            # Hard guardrail: no single USD trade should have |bruto| > 1 B.
+            # If it does the row is definitely garbage (user rule: > 1000 M USD ⇒ wrong).
+            if self._is_dollar_related(moneda) and abs(bruto) > 1_000_000_000:
+                if 0 < abs(bruto_fuente) < 1_000_000_000 and abs(cantidad_num) > 0:
+                    bruto = bruto_fuente
+                    precio_nominal = self._effective_unit_price_from_bruto(cantidad_num, bruto_fuente)
+                    ws.cell(row, col_precio_nominal, precio_nominal)
+                else:
+                    bruto = 0
+                    precio_nominal = 0
+                    ws.cell(row, col_precio_nominal, 0)
+                ws.cell(row, 13, bruto)
+                neto = bruto  # best-effort approximation
             ws.cell(row, 16, neto)
             
             # Col R (18): Moneda Emisión - Si es fórmula, buscar en cache
@@ -2311,6 +2325,30 @@ class GalloVisualMerger:
                 
                 auditoria = f"Origen: Visual | Fecha: {concertacion} | Cod: {cod_instrum} | Op: {operacion}"
                 
+                # --- Column-shift detection for USD cada-100 instruments ---
+                # When OCR drops a cell (e.g. Precio), all subsequent columns shift
+                # left: the TC value lands in the Precio slot, Bruto in the TC slot, etc.
+                # Detect this by checking if the "Precio" looks like a TC (>200 for USD).
+                _pr = self._to_float(precio)
+                _tc = self._to_float(tipo_cambio_fuente)
+                _br = self._to_float(bruto_fuente)
+                _qt = self._to_float(cantidad)
+                if (self._is_dollar_related(moneda)
+                        and self._es_tipo_precio_cada_100(tipo_instrumento)
+                        and abs(_pr) > 200
+                        and abs(_qt) > 0
+                        and abs(_tc) > 0):
+                    derived_price = abs(_tc) / abs(_qt)
+                    if 0 < derived_price < 200:
+                        # Shift confirmed: precio=TC, TC=bruto → correct them.
+                        tipo_cambio_fuente = _pr
+                        bruto_fuente = _tc
+                        precio = derived_price
+                        gastos = 0
+                        interes = 0
+                        neto_fuente = _tc   # approx neto ≈ bruto (gastos zeroed)
+                        auditoria += " | SHIFT_CORRECTED"
+
                 all_transactions.append({
                     'cod_instrum': cod_num,  # Forzado a número
                     'fecha': fecha_dt if fecha_dt else concertacion,
