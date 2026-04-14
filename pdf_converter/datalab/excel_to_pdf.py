@@ -211,13 +211,15 @@ class ExcelToPdfExporter:
             return str(value) if value else ""
 
     def _format_price_number(self, value: Any) -> str:
-        """Muestra micro-precios con 4 decimales para evitar que se vean como 0,00."""
+        """Muestra precios con 4 decimales cuando tienen dígitos significativos más allá de 2 decimales."""
         try:
             num = abs(float(value))
         except (ValueError, TypeError):
             return str(value) if value else ""
 
-        decimals = 4 if 0 < num < 1 else 2
+        # Use 4 decimals for micro-prices (<1) or when rounding to 2 would lose precision
+        rounded_2 = round(num, 2)
+        decimals = 4 if (0 < num < 1) or abs(num - rounded_2) > 1e-6 else 2
         return self._format_number(value, decimals)
     
     def _format_date(self, value: Any) -> str:
