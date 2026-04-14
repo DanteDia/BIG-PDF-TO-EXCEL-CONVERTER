@@ -5,7 +5,7 @@ Transforms raw extracted data to match the expected Excel format.
 
 import re
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, List, Optional, Tuple
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from rich.console import Console
@@ -198,6 +198,330 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
         return -result if is_negative else result
     except ValueError:
         return None
+
+
+def parse_visual_quantity_value(value) -> Optional[float]:
+    """Parse Visual quantity cells, preferring integer quantities over zero decimal tails."""
+    if value in (None, ''):
+        return None
+
+    if isinstance(value, (int, float)):
+        return int(value) if float(value).is_integer() else float(value)
+
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    is_negative = False
+    if raw.startswith('('):
+        is_negative = True
+        raw = raw[1:]
+
+    raw = fix_trailing_negative(raw)
+    if raw.startswith('-'):
+        is_negative = True
+        raw = raw[1:]
+
+    raw = raw.rstrip(',').rstrip('.')
+
+    zero_decimal = re.match(r'^(\d{1,3}(?:\.\d{3})+),(0+)$', raw)
+    if zero_decimal:
+        result = int(zero_decimal.group(1).replace('.', ''))
+        return -result if is_negative else result
+
+    thousands_only = re.match(r'^\d{1,3}(?:\.\d{3})+$', raw)
+    if thousands_only:
+        result = int(raw.replace('.', ''))
+        return -result if is_negative else result
+
+    parsed = parse_parentheses_negative(value)
+    if parsed is None:
+        return None
+    return int(parsed) if float(parsed).is_integer() else parsed
+
+
+def _normalize_visual_date_key(value) -> str:
+    if value is None:
+        return ''
+    if hasattr(value, 'year') and hasattr(value, 'month') and hasattr(value, 'day'):
+        return f"{value.day}/{value.month}/{value.year}"
+
+    text = str(value).strip()
+    if not text:
+        return ''
+
+    slash = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', text)
+    if slash:
+        return f"{int(slash.group(1))}/{int(slash.group(2))}/{slash.group(3)}"
+
+    iso = re.match(r'^(\d{4})-(\d{2})-(\d{2})', text)
+    if iso:
+        return f"{int(iso.group(3))}/{int(iso.group(2))}/{iso.group(1)}"
+
+    return text
+
+
+def _normalize_visual_currency_key(value) -> str:
+    text = str(value or '').strip().lower()
+    if not text:
+        return ''
+    if 'peso' in text or text == 'ars':
+        return 'pesos'
+    if 'cable' in text or 'dolar ca' in text:
+        return 'dolar cable'
+    if 'mep' in text:
+        return 'dolar mep'
+    if 'dolar' in text or 'dólar' in text or text == 'usd':
+        return 'dolar'
+    return text
+
+
+def _normalize_visual_operation_key(value) -> str:
+    text = re.sub(r'\s+', ' ', str(value or '').strip().lower())
+    text = re.sub(r'\bno$', '', text).strip()
+    return text
+
+
+def _normalize_visual_code(value) -> Optional[int]:
+    if isinstance(value, str):
+        text = value.strip()
+        if re.match(r'^\d{1,3}(?:\.\d{3})+$', text):
+            try:
+                return int(text.replace('.', ''))
+            except Exception:
+                pass
+    try:
+        return int(float(value))
+    except Exception:
+        return None
+
+
+def _build_visual_quantity_anchors(wb: Workbook) -> Dict[Tuple[int, str, str, str], int]:
+    """Collect trustworthy quantities from Resultado Ventas sheets before Boletos is processed."""
+    anchors: Dict[Tuple[int, str, str, str], int] = {}
+
+    for sheet_name in ['Resultado Ventas ARS', 'Resultado Ventas USD']:
+        if sheet_name not in wb.sheetnames:
+            continue
+
+        ws = wb[sheet_name]
+        headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
+
+        code_col = next((i for i, h in enumerate(headers, start=1) if 'cod.instrum' in h or h == 'codigo'), None)
+        concert_col = next((i for i, h in enumerate(headers, start=1) if 'concert' in h), None)
+        currency_col = next((i for i, h in enumerate(headers, start=1) if h == 'moneda'), None)
+        oper_col = next((i for i, h in enumerate(headers, start=1) if 'tipo oper' in h), None)
+        qty_col = next((i for i, h in enumerate(headers, start=1) if h == 'cantidad'), None)
+
+        if not all([code_col, concert_col, currency_col, oper_col, qty_col]):
+            continue
+
+        for row in range(2, ws.max_row + 1):
+            code = _normalize_visual_code(ws.cell(row, code_col).value)
+            qty = parse_visual_quantity_value(ws.cell(row, qty_col).value)
+            if code is None or qty in (None, 0):
+                continue
+
+            key = (
+                code,
+                _normalize_visual_date_key(ws.cell(row, concert_col).value),
+                _normalize_visual_currency_key(ws.cell(row, currency_col).value),
+                _normalize_visual_operation_key(ws.cell(row, oper_col).value),
+            )
+
+            qty_int = int(qty) if float(qty).is_integer() else None
+            if qty_int is None:
+                continue
+
+            current = anchors.get(key)
+            if current is None or abs(qty_int) < abs(current):
+                anchors[key] = qty_int
+
+    return anchors
+
+
+def _lookup_visual_quantity_anchor(
+    anchors: Dict[Tuple[int, str, str, str], int],
+    code,
+    concertacion,
+    moneda,
+    operacion,
+) -> Optional[int]:
+    code_key = _normalize_visual_code(code)
+    if code_key is None:
+        return None
+
+    exact_key = (
+        code_key,
+        _normalize_visual_date_key(concertacion),
+        _normalize_visual_currency_key(moneda),
+        _normalize_visual_operation_key(operacion),
+    )
+    if exact_key in anchors:
+        return anchors[exact_key]
+
+    date_key = _normalize_visual_date_key(concertacion)
+    currency_key = _normalize_visual_currency_key(moneda)
+    operation_key = _normalize_visual_operation_key(operacion)
+
+    relaxed = [
+        qty
+        for (anchor_code, anchor_date, anchor_currency, anchor_operation), qty in anchors.items()
+        if anchor_code == code_key
+        and anchor_date == date_key
+        and anchor_currency == currency_key
+        and anchor_operation.startswith(operation_key[:12])
+    ]
+
+    if len(relaxed) == 1:
+        return relaxed[0]
+
+    return None
+
+
+def _is_strong_visual_quantity_anomaly(raw_qty) -> bool:
+    raw_text = str(raw_qty or '').strip()
+    if not raw_text:
+        return False
+
+    raw_text = raw_text.strip('()')
+    raw_text = fix_trailing_negative(raw_text).lstrip('-')
+
+    if ',' in raw_text:
+        integer_part, decimal_part = raw_text.rsplit(',', 1)
+        if re.match(r'^\d{1,3}(?:\.\d{3})*$', integer_part) and decimal_part.isdigit():
+            # Non-zero decimal in what should be an integer quantity = column-width truncation.
+            # e.g. 1.285.714,2 means 1285714285 was truncated to 1285714.2
+            if int(decimal_part) != 0:
+                return True
+            return False
+        return True
+
+    if re.match(r'^\d{1,3}(?:\.\d{3})+$', raw_text):
+        return False
+
+    if re.match(r'^\d+\.\d$', raw_text):
+        return False
+
+    if raw_text.count('.') >= 2:
+        return True
+
+    decimal_match = re.match(r'^-?\d+\.(\d+)$', raw_text)
+    if decimal_match and len(decimal_match.group(1)) >= 2:
+        return True
+
+    return False
+
+
+def _build_visual_code_anchor_evidence(ws: Worksheet) -> Dict[int, int]:
+    """Count strong raw OCR quantity anomalies per code in Boletos."""
+    if ws.title.lower() != 'boletos':
+        return {}
+
+    headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
+    code_col = next((i for i, h in enumerate(headers, start=1) if 'cod.instru' in h or h == 'cod.instrum'), None)
+    qty_col = next((i for i, h in enumerate(headers, start=1) if h == 'cantidad'), None)
+
+    if not code_col or not qty_col:
+        return {}
+
+    evidence: Dict[int, int] = {}
+    for row in range(2, ws.max_row + 1):
+        code = _normalize_visual_code(ws.cell(row, code_col).value)
+        raw_qty = ws.cell(row, qty_col).value
+        if code is None or not _is_strong_visual_quantity_anomaly(raw_qty):
+            continue
+        evidence[code] = evidence.get(code, 0) + 1
+
+    return evidence
+
+
+def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_anchor_evidence: int = 0, operacion: str = '') -> bool:
+    if anchor_qty in (None, 0):
+        return False
+
+    try:
+        parsed_num = float(parsed_qty)
+    except Exception:
+        return True
+
+    if float(anchor_qty) == parsed_num:
+        return False
+
+    raw_text = str(raw_qty or '').strip()
+    has_strong_anomaly = _is_strong_visual_quantity_anomaly(raw_qty)
+    allow_clean_propagation = code_anchor_evidence >= 2 and 'contado continuo' in _normalize_visual_operation_key(operacion)
+
+    if has_strong_anomaly:
+        return True
+
+    digits = re.sub(r'\D', '', raw_text)
+    anchor_digits = str(abs(int(anchor_qty)))
+    if digits and anchor_digits.startswith(digits) and len(anchor_digits) > len(digits):
+        if not allow_clean_propagation:
+            return False
+        return True
+
+    parsed_abs = abs(parsed_num)
+    anchor_abs = abs(float(anchor_qty))
+    if parsed_abs == 0:
+        return True
+
+    ratio = max(anchor_abs / parsed_abs, parsed_abs / anchor_abs)
+    return allow_clean_propagation and ratio >= 10
+
+
+def _maybe_rescue_visual_bruto(current_bruto, qty_value, precio_value):
+    try:
+        qty_num = float(qty_value)
+        precio_num = float(precio_value)
+    except Exception:
+        return current_bruto
+
+    expected = qty_num * precio_num
+
+    try:
+        bruto_num = float(current_bruto)
+    except Exception:
+        return expected
+
+    if bruto_num == 0:
+        return expected
+
+    ratio = abs(expected) / abs(bruto_num) if bruto_num else float('inf')
+    if ratio >= 10 or ratio <= 0.1:
+        return expected
+
+    return current_bruto
+
+
+def _maybe_rescue_visual_neto(current_neto, qty_value, precio_value, gastos_value):
+    try:
+        qty_num = float(qty_value)
+        precio_num = float(precio_value)
+        gastos_num = float(gastos_value or 0)
+    except Exception:
+        return current_neto
+
+    expected_bruto = qty_num * precio_num
+    expected_neto = expected_bruto + gastos_num if qty_num > 0 else expected_bruto - gastos_num
+
+    try:
+        neto_num = float(current_neto)
+    except Exception:
+        return expected_neto
+
+    if neto_num == 0:
+        return expected_neto
+
+    ratio = abs(expected_neto) / abs(neto_num) if neto_num else float('inf')
+    if ratio >= 10 or ratio <= 0.1:
+        return expected_neto
+
+    return current_neto
 
 
 def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
@@ -897,7 +1221,12 @@ def is_integer_column(header: str) -> bool:
     return False
 
 
-def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
+def process_visual_sheet(
+    ws: Worksheet,
+    sheet_name: str,
+    quantity_anchors: Optional[Dict[Tuple[int, str, str, str], int]] = None,
+    code_anchor_evidence: Optional[Dict[int, int]] = None,
+) -> None:
     """
     Process a Visual format sheet:
     - Convert parentheses to negative numbers
@@ -913,6 +1242,11 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
     cantidad_col = None
     precio_col = None
     bruto_col = None
+    boleto_col = None
+    moneda_col = None
+    codigo_col = None
+    gastos_col = None
+    neto_col = None
     if sheet_name.lower() == 'boletos':
         for idx, header_str in enumerate(headers_lower, start=1):
             if header_str == 'cantidad':
@@ -921,6 +1255,16 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                 precio_col = idx
             elif header_str == 'bruto':
                 bruto_col = idx
+            elif 'boleto' in header_str:
+                boleto_col = idx
+            elif header_str == 'moneda':
+                moneda_col = idx
+            elif 'cod.instru' in header_str or header_str == 'cod.instrum':
+                codigo_col = idx
+            elif 'gasto' in header_str:
+                gastos_col = idx
+            elif 'neto' in header_str:
+                neto_col = idx
 
     if sheet_name.lower() == 'boletos':
         tipo_col = None
@@ -958,8 +1302,11 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
                 val = cell.value.strip()
                 
                 if val:  # Non-empty string
-                    # Try to parse as numeric (handles parentheses as negative)
-                    numeric = parse_parentheses_negative(val)
+                    # Quantities in Visual often need integer-aware parsing.
+                    if header_str == 'cantidad':
+                        numeric = parse_visual_quantity_value(val)
+                    else:
+                        numeric = parse_parentheses_negative(val)
                     if numeric is not None:
                         # Check if it should be an integer
                         if is_integer_column(header_str):
@@ -979,12 +1326,40 @@ def process_visual_sheet(ws: Worksheet, sheet_name: str) -> None:
 
         if cantidad_col and precio_col and bruto_col:
             raw_qty = raw_row_values[cantidad_col - 1]
+            qty_value = ws.cell(row, cantidad_col).value
+            precio_value = ws.cell(row, precio_col).value
+            bruto_value = ws.cell(row, bruto_col).value
+
             if isinstance(raw_qty, str):
-                qty_value = ws.cell(row, cantidad_col).value
-                precio_value = ws.cell(row, precio_col).value
-                bruto_value = ws.cell(row, bruto_col).value
                 best_qty = _choose_best_boletos_quantity(raw_qty, qty_value, precio_value, bruto_value)
                 ws.cell(row, cantidad_col).value = best_qty
+                qty_value = best_qty
+
+            if sheet_name.lower() == 'boletos' and quantity_anchors and codigo_col and moneda_col:
+                anchor_qty = _lookup_visual_quantity_anchor(
+                    quantity_anchors,
+                    ws.cell(row, codigo_col).value,
+                    ws.cell(row, 2).value,
+                    ws.cell(row, moneda_col).value,
+                    ws.cell(row, 6).value,
+                )
+                if _should_apply_visual_anchor(
+                    raw_qty,
+                    qty_value,
+                    anchor_qty,
+                    code_anchor_evidence=(code_anchor_evidence or {}).get(_normalize_visual_code(ws.cell(row, codigo_col).value) or -1, 0),
+                    operacion=ws.cell(row, 6).value,
+                ):
+                    ws.cell(row, cantidad_col).value = anchor_qty
+                    qty_value = anchor_qty
+                    ws.cell(row, bruto_col).value = _maybe_rescue_visual_bruto(bruto_value, qty_value, precio_value)
+                    if neto_col and gastos_col:
+                        ws.cell(row, neto_col).value = _maybe_rescue_visual_neto(
+                            ws.cell(row, neto_col).value,
+                            qty_value,
+                            precio_value,
+                            ws.cell(row, gastos_col).value,
+                        )
 
 
 def process_precio_tenencias_sheet(ws: Worksheet) -> None:
@@ -1253,12 +1628,27 @@ def postprocess_visual_workbook(wb: Workbook) -> Workbook:
     Apply Visual format post-processing to a workbook.
     """
     console.print("\n[cyan]📐 Post-processing Visual format...[/cyan]")
-    
+
+    # First normalize all non-Boletos sheets so Resultado Ventas carries stable integer anchors.
     for sheet_name in wb.sheetnames:
+        if sheet_name.lower() == 'boletos':
+            continue
+
         ws = wb[sheet_name]
         process_visual_sheet(ws, sheet_name)
         if sheet_name.lower() == 'preciotenenciasiniciales':
             process_precio_tenencias_sheet(ws)
+
+    quantity_anchors = _build_visual_quantity_anchors(wb)
+    code_anchor_evidence = _build_visual_code_anchor_evidence(wb['Boletos']) if 'Boletos' in wb.sheetnames else {}
+
+    if 'Boletos' in wb.sheetnames:
+        process_visual_sheet(
+            wb['Boletos'],
+            'Boletos',
+            quantity_anchors=quantity_anchors,
+            code_anchor_evidence=code_anchor_evidence,
+        )
     
     console.print("[green]✓ Post-processing complete[/green]")
     return wb

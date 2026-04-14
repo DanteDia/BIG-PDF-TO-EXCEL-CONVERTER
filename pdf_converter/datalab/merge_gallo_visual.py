@@ -202,7 +202,15 @@ class GalloVisualMerger:
             return False
         return True
 
-    def _should_preserve_visual_source_money(self, origen: str, bruto_fuente: float, neto_fuente: float, bruto_calc: float, neto_calc: float) -> bool:
+    def _should_preserve_visual_source_money(
+        self,
+        origen: str,
+        bruto_fuente: float,
+        neto_fuente: float,
+        bruto_calc: float,
+        neto_calc: float,
+        moneda: str = "",
+    ) -> bool:
         """Decide si conviene preservar los monetarios fuente de Visual frente a una recomputación dañada."""
         if not self._is_visual_origin(origen):
             return False
@@ -214,7 +222,21 @@ class GalloVisualMerger:
         source_material = source_ref >= 100
         calc_collapsed = calc_ref < 1
         calc_far_below_source = source_ref > 0 and calc_ref <= source_ref * 0.1
-        return source_material and (calc_collapsed or calc_far_below_source)
+        if source_material and (calc_collapsed or calc_far_below_source):
+            return True
+
+        # For dollar legs in Visual Boletos, the source bruto/neto from the PDF is often
+        # more reliable than recomputing from a rounded micro-price after quantity rescue.
+        if self._is_dollar_related(moneda) and source_material:
+            same_bruto_sign = bruto_fuente == 0 or bruto_calc == 0 or (bruto_fuente * bruto_calc) > 0
+            same_neto_sign = neto_fuente == 0 or neto_calc == 0 or (neto_fuente * neto_calc) > 0
+            if same_bruto_sign and same_neto_sign:
+                bruto_rel_error = abs(bruto_calc - bruto_fuente) / abs(bruto_fuente) if bruto_fuente else 0
+                neto_rel_error = abs(neto_calc - neto_fuente) / abs(neto_fuente) if neto_fuente else 0
+                if bruto_rel_error <= 0.10 or neto_rel_error <= 0.10:
+                    return True
+
+        return False
 
     def _should_preserve_visual_usd_micro_source_money(self, origen: str, moneda: str, tipo_instrumento: str,
                                                        price, bruto_fuente: float, bruto_calc: float) -> bool:
@@ -1296,6 +1318,20 @@ class GalloVisualMerger:
             
             # Obtener tipo de instrumento (ya materializado o valor directo)
             tipo_instrumento = ws.cell(row, 1).value or especie_data.get('tipo_especie', '')
+
+            # Fallback para códigos que solo existen en Gallo (no en Visual/EspeciesVisual):
+            # derival el tipo de instrumento del nombre de la hoja Gallo de origen.
+            if not tipo_instrumento:
+                origen = ws.cell(row, 17).value or ''
+                origen_lower = str(origen).lower()
+                if 'gallo' in origen_lower:
+                    sheet_part = origen_lower.replace('gallo-', '')
+                    if any(k in sheet_part for k in ['renta fija', 'titulos publicos', 'tit privados']):
+                        tipo_instrumento = 'Títulos Públicos'
+                    elif 'cedear' in sheet_part:
+                        tipo_instrumento = 'Cedears'
+                    if tipo_instrumento:
+                        ws.cell(row, 1, tipo_instrumento)
             
             # Col I (9): InstrumentoConMoneda - Si es fórmula, buscar en cache
             cell_val = ws.cell(row, 9).value
@@ -1360,7 +1396,7 @@ class GalloVisualMerger:
             else:
                 neto = cantidad_num * precio_nominal - gastos_num
 
-            if self._should_preserve_visual_source_money(origen, bruto_fuente, neto_fuente, bruto, neto):
+            if self._should_preserve_visual_source_money(origen, bruto_fuente, neto_fuente, bruto, neto, moneda):
                 bruto = bruto_fuente
                 neto = neto_fuente
                 ws.cell(row, 13, bruto)
