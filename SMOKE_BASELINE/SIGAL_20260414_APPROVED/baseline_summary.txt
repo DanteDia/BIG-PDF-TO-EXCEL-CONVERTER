@@ -1,0 +1,46 @@
+SIGAL 10374 approved baseline – 2026-04-14 15:13
+Gallo : IG_10374_rebuilt.xlsx
+Visual: _web_sim_visual.xlsx
+Values: 10374_SIGAL_ARIEL_baseline_values.xlsx
+
+Sheets:
+  Posicion Inicial Gallo: 3 rows x 22 cols
+  Posicion Final Gallo: 1 rows x 22 cols
+  Boletos: 67 rows x 20 cols
+  Cauciones Tomadoras: 494 rows x 17 cols
+  Cauciones Colocadoras: 6 rows x 17 cols
+  Rentas y Dividendos Gallo: 6 rows x 20 cols
+  Resultado Ventas ARS: 6 rows x 27 cols
+  Resultado Ventas USD: 62 rows x 29 cols
+  Rentas Dividendos ARS: 6 rows x 15 cols
+  Rentas Dividendos USD: 1 rows x 15 cols
+  FCI: 1 rows x 11 cols
+  Opciones: 1 rows x 12 cols
+  Futuros: 1 rows x 4 cols
+  Pagare_CPD: 1 rows x 14 cols
+  Resumen: 3 rows x 11 cols
+  Posicion Titulos: 1 rows x 6 cols
+  EspeciesVisual: 16258 rows x 18 cols
+  EspeciesGallo: 2272 rows x 26 cols
+  Cotizacion Dolar Historica: 3490 rows x 3 cols
+  PreciosInicialesEspecies: 726 rows x 10 cols
+  RatiosCedearsAcciones: 336 rows x 3 cols
+
+Resumen:
+  Row 1: ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Pagare/CPD', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total']
+  Row 2: ['ARS', 11812513.067539454, 0, 0, 0, 0, 0, 0, -144882695.75000033, 1436331.8000000003, -131633850.88246088]
+  Row 3: ['USD', 303038.00490927324, 0, 0, 0, 0, 0, 0, 0, 0, 303038.00490927324]
+
+Boletos: 66 data rows
+Key boletos:
+  B=79603: PN=1.4217, TC=1, Bruto=5686800000.0
+  B=81990: PN=1.4307, TC=1, Bruto=-5722800000.0
+  B=82749: PN=0.0011, TC=1280, Bruto=2600000.0
+  B=84357: PN=0.0011, TC=1261, Bruto=2550000.0
+
+Protected invariants:
+- B=79603  Precio Nominal=1.4217   Bruto=5686800000
+- B=81990  Precio Nominal=1.4307   Bruto=-5722800000
+- B=82749  Precio Nominal=0.0011   TC=1280  Bruto=2600000
+- B=84357  Precio Nominal=0.0011   TC=1261  Bruto=2550000
+- Full workbook values compared cell-by-cell by smoke test.
