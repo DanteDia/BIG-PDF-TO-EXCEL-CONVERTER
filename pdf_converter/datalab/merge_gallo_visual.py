@@ -31,7 +31,8 @@ class GalloVisualMerger:
     
     # Operaciones de compra/venta para Boletos
     OPERACIONES_BOLETOS = ['compra', 'venta', 'cpra', 'canje', 'licitacion', 'licitaciones', 
-                           'compra usd', 'venta usd', 'cpra cable', 'venta cable']
+                           'compra usd', 'venta usd', 'cpra cable', 'venta cable',
+                           'trf titulos']
     
     # Operaciones de rentas/dividendos
     OPERACIONES_RENTAS = ['renta', 'dividendo', 'dividendos', 'amortizacion', 'amortizaciones']
@@ -1883,7 +1884,116 @@ class GalloVisualMerger:
         
         # No encontrado en ningún lado - retornar 0, 0
         return (0.0, 0.0)
-    
+
+    def _compute_synthetic_initial_positions(self) -> dict:
+        """Compute initial positions from ALL pre-2025 historical operations in Gallo.
+
+        For securities that have transactions in Gallo but no row in
+        Posicion Inicial, we build a running weighted-average stock from
+        every pre-2025 operation (COMPRA, VENTA, TRF TITULOS, CANJE,
+        LICITACION, AMORTIZACION, etc.) to derive the correct cost basis
+        at 01/01/2025.
+
+        Returns:
+            dict keyed by cleaned cod_instrum -> {
+                'cantidad': float,
+                'precio_per100': float,   # weighted-average price in per-100 terms
+                'especie': str,
+                'tipo_especie': str,      # sheet name (e.g. 'Renta Fija Dolares')
+            }
+        """
+        from collections import defaultdict
+
+        # Collect all pre-2025 operations grouped by security
+        ops_by_cod: dict = defaultdict(list)
+        seen = set()
+
+        for sheet_name in self.gallo_wb.sheetnames:
+            if any(skip in sheet_name for skip in ['Posicion', 'Posición', 'Resultado', 'Cauciones', 'Totales']):
+                continue
+            gallo_ws = self.gallo_wb[sheet_name]
+            for row in range(2, gallo_ws.max_row + 1):
+                tipo_fila = gallo_ws.cell(row, 1).value
+                if not tipo_fila or str(tipo_fila).lower().strip() != 'transaccion':
+                    continue
+
+                operacion = gallo_ws.cell(row, 5).value
+                fecha = gallo_ws.cell(row, 4).value
+                if not operacion or not fecha:
+                    continue
+
+                # Only pre-2025 operations
+                if self._is_year_2025(fecha):
+                    continue
+
+                operacion_lower = str(operacion).lower().strip()
+                # Accept buy/sell/trf/canje/amort — anything that moves stock
+                ops_validas = ['compra', 'venta', 'cpra', 'canje', 'licitacion', 'trf', 'amortizacion']
+                if not any(op in operacion_lower for op in ops_validas):
+                    continue
+
+                cod_especie = gallo_ws.cell(row, 2).value
+                especie = gallo_ws.cell(row, 3).value
+                numero = gallo_ws.cell(row, 6).value
+                cantidad = self._to_float(gallo_ws.cell(row, 7).value)
+                precio = self._to_float(gallo_ws.cell(row, 8).value)
+
+                cod_clean = self._clean_codigo(cod_especie)
+                if not cod_clean:
+                    continue
+
+                # Deduplicate (OCR often produces duplicate rows)
+                dedup_key = (sheet_name, str(fecha), str(numero), cod_clean,
+                             operacion_lower, cantidad, precio)
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                fecha_dt, _ = self._parse_fecha(fecha)
+                ops_by_cod[cod_clean].append({
+                    'fecha': fecha_dt,
+                    'operacion': operacion_lower,
+                    'cantidad': cantidad,
+                    'precio': precio,
+                    'especie': especie,
+                    'tipo_especie': sheet_name,
+                })
+
+        # For each security, compute running stock through chronological operations
+        result = {}
+        for cod, ops in ops_by_cod.items():
+            ops.sort(key=lambda o: (o['fecha'] or datetime(1900, 1, 1), 0 if o['cantidad'] >= 0 else 1))
+            stock_qty = 0.0
+            stock_price = 0.0  # weighted average in per-100 terms
+
+            for op in ops:
+                qty = op['cantidad']
+                px = op['precio']
+
+                if qty > 0:  # Buy-like: COMPRA, TRF, CANJE, LICITACION
+                    valor_anterior = stock_qty * stock_price
+                    valor_nuevo = qty * px
+                    stock_qty += qty
+                    if stock_qty > 0:
+                        stock_price = (valor_anterior + valor_nuevo) / stock_qty
+                elif qty < 0:  # Sell-like: VENTA, AMORTIZACION
+                    stock_qty += qty  # qty is negative
+                    # Price doesn't change on sales
+
+            if stock_qty > 0 and stock_price > 0:
+                # Determine if this security's sheet uses USD pricing
+                is_usd_sheet = any(tok in ops[-1]['tipo_especie'].lower()
+                                   for tok in ['dolar', 'exterior'])
+                result[cod] = {
+                    'cantidad': stock_qty,
+                    'precio_per100': stock_price,
+                    'especie': ops[-1]['especie'],
+                    'tipo_especie': ops[-1]['tipo_especie'],
+                    'is_usd': is_usd_sheet,
+                }
+
+        return result
+
     def _create_posicion_inicial(self, wb: Workbook):
         """Crea hoja Posicion Inicial Gallo con las mismas columnas que Posicion Final."""
         ws = wb.create_sheet("Posicion Inicial Gallo")
@@ -2023,7 +2133,64 @@ class GalloVisualMerger:
             ))
             
             row_out += 1
-    
+
+        # --- Synthetic initial positions from pre-2025 historical operations ---
+        # For securities that have transactions in Gallo but no Posicion Inicial
+        # entry, compute cost basis from all pre-2025 ops (TRF TITULOS, COMPRA, etc.)
+        existing_codes = set()
+        for r in range(2, row_out):
+            cod_val = ws.cell(r, 4).value
+            if cod_val:
+                existing_codes.add(self._clean_codigo(str(cod_val)))
+
+        synthetic = self._compute_synthetic_initial_positions()
+        for cod, data in sorted(synthetic.items()):
+            if cod in existing_codes:
+                continue  # Already in Posicion Inicial from Gallo source
+
+            try:
+                cod_num = int(cod)
+            except (ValueError, TypeError):
+                cod_num = cod
+
+            tipo_instrumento_val = self._vlookup_especies_visual(cod, 16) if cod else ''
+            # The PPP is in the Gallo sheet's native units (per-100).
+            # For USD sheets (Renta Fija Dolares, Tit Privados Exterior),
+            # prices are in USD per-100. Col V must be in ARS (nominal)
+            # because the stock init code divides by valor_usd_dia for
+            # Posicion entries with stock_cantidad > 0.
+            precio_per100 = data['precio_per100']
+            if data.get('is_usd'):
+                # Convert USD per-100 → ARS per-100
+                precio_per100 = precio_per100 * self.COTIZACION_INICIO_PERIODO
+            precio_nominal = self._normalize_nominal_price(precio_per100, tipo_instrumento_val)
+
+            ws.cell(row_out, 1, data['tipo_especie'])  # tipo_especie (sheet name)
+            ws.cell(row_out, 2, "")  # Ticker (unknown for synthetic)
+            ws.cell(row_out, 3, data['especie'])
+            ws.cell(row_out, 4, cod_num)
+            ws.cell(row_out, 5, "Synthetic-from-history")
+            ws.cell(row_out, 6, "Computed from pre-2025 ops (TRF/COMPRA/CANJE)")
+            ws.cell(row_out, 7, "")  # detalle
+            ws.cell(row_out, 8, "")  # custodia
+            ws.cell(row_out, 9, data['cantidad'])
+            ws.cell(row_out, 10, 0)  # precio pesos - unknown
+            ws.cell(row_out, 11, 0)  # precio usd - unknown
+            ws.cell(row_out, 12, 0)  # PreciosIniciales - not used
+            ws.cell(row_out, 13, "")  # precio costo
+            ws.cell(row_out, 14, "Synthetic-from-history")  # origen
+            ws.cell(row_out, 15, f"PPP from {len(synthetic)} pre-2025 ops")
+            ws.cell(row_out, 16, precio_per100)  # Precio a Utilizar — ARS per-100 for USD sheets
+            ws.cell(row_out, 17, 0)  # importe_pesos
+            ws.cell(row_out, 18, 0)  # porc_cartera_pesos
+            ws.cell(row_out, 19, 0)  # importe_dolares
+            ws.cell(row_out, 20, 0)  # porc_cartera_dolares
+            tipo_inst_formula = f'=SI(ESERROR(BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO));"";BUSCARV(D{row_out};EspeciesVisual!C:R;16;FALSO))'
+            ws.cell(row_out, 21, tipo_inst_formula)
+            ws.cell(row_out, 22, precio_nominal)  # Precio Nominal (already normalized)
+
+            row_out += 1
+
     def _create_posicion_final(self, wb: Workbook):
         """Crea hoja Posicion Final Gallo con columnas adicionales."""
         ws = wb.create_sheet("Posicion Final Gallo")
@@ -2183,6 +2350,19 @@ class GalloVisualMerger:
             except:
                 continue
             
+            # Pre-scan: in "Pesos" sheets, detect instrument codes that have
+            # a "VENTA USD" operation.  Gallo glitches and puts all rows for
+            # that instrument in USD despite being in the Pesos section.
+            # ALL rows for such an instrument must use "Dolar MEP".
+            _usd_override_codes = set()
+            if 'pesos' in sheet_name.lower():
+                for _r in range(2, gallo_ws.max_row + 1):
+                    _op = gallo_ws.cell(_r, 5).value
+                    if _op and 'venta' in str(_op).lower() and 'usd' in str(_op).lower():
+                        _cod = gallo_ws.cell(_r, 2).value
+                        if _cod:
+                            _usd_override_codes.add(str(_cod).strip())
+            
             for row in range(2, gallo_ws.max_row + 1):
                 operacion = gallo_ws.cell(row, 5).value  # Col E
                 fecha = gallo_ws.cell(row, 4).value
@@ -2200,8 +2380,8 @@ class GalloVisualMerger:
                 if 'col cau' in operacion_lower:
                     continue
                 
-                # Solo operaciones de compra/venta para Boletos
-                operaciones_validas = ['compra', 'venta', 'cpra', 'canje', 'licitacion']
+                # Solo operaciones de compra/venta/trf para Boletos
+                operaciones_validas = ['compra', 'venta', 'cpra', 'canje', 'licitacion', 'trf']
                 if not any(op in operacion_lower for op in operaciones_validas):
                     continue
                 
@@ -2219,12 +2399,19 @@ class GalloVisualMerger:
                 gastos_usd = gallo_ws.cell(row, 14).value
                 
                 # Determinar moneda PRIMERO basándose en el nombre de la hoja
-                # Si la hoja dice "Pesos", es Pesos (ignorar "USD" en operación)
+                # Si la hoja dice "Pesos", es Pesos.
+                # EXCEPCION: si alguna op del instrumento es "VENTA USD" en esta
+                # sección Pesos, Gallo glitchea y TODAS las filas de ese
+                # instrumento tienen valores en USD → override a "Dolar MEP".
                 # Si la hoja dice "Dolares", es Dolar MEP
                 # Si la hoja dice "Exterior", es Dolar Cable
                 sheet_lower = sheet_name.lower()
+                cod_str = str(cod_especie).strip() if cod_especie else ''
                 if 'pesos' in sheet_lower:
-                    moneda = "Pesos"
+                    if cod_str in _usd_override_codes:
+                        moneda = "Dolar MEP"
+                    else:
+                        moneda = "Pesos"
                 elif 'exterior' in sheet_lower:
                     moneda = "Dolar Cable"
                 elif 'dolar' in sheet_lower:
