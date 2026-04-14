@@ -439,7 +439,46 @@ def _build_visual_code_anchor_evidence(ws: Worksheet) -> Dict[int, int]:
     return evidence
 
 
-def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_anchor_evidence: int = 0, operacion: str = '') -> bool:
+def _build_code_mixed_magnitude(ws: Worksheet) -> Dict[int, bool]:
+    """Detect codes whose Boletos quantities span 3+ orders of magnitude (e.g., millions AND billions).
+
+    When a code has mixed magnitudes, some boletos were likely column-width truncated
+    (lost a '.000' thousands group).  When all boletos sit at the same scale, the
+    quantities are probably correct and differing anchors are OCR artifacts.
+    """
+    import math
+    headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
+    cod_col = None
+    qty_col = None
+    for idx, h in enumerate(headers, start=1):
+        if 'cod.instru' in h:
+            cod_col = idx
+        elif h == 'cantidad':
+            qty_col = idx
+    if not cod_col or not qty_col:
+        return {}
+
+    code_mags: Dict[int, List[int]] = {}
+    for row in range(2, ws.max_row + 1):
+        code = _normalize_visual_code(ws.cell(row, cod_col).value)
+        if code is None:
+            continue
+        try:
+            qty_abs = abs(float(ws.cell(row, qty_col).value or 0))
+        except (ValueError, TypeError):
+            continue
+        if qty_abs < 1:
+            continue
+        mag = int(math.log10(qty_abs))
+        code_mags.setdefault(code, []).append(mag)
+
+    return {
+        code: (max(mags) - min(mags)) >= 3
+        for code, mags in code_mags.items()
+    }
+
+
+def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_anchor_evidence: int = 0, operacion: str = '', code_mixed_magnitude: bool = False) -> bool:
     if anchor_qty in (None, 0):
         return False
 
@@ -458,6 +497,17 @@ def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_ancho
     if has_strong_anomaly:
         return True
 
+    parsed_abs = abs(parsed_num)
+    anchor_abs = abs(float(anchor_qty))
+
+    # 1000× ratio indicates exactly one ".000" group was lost to column truncation.
+    # Only trust this when the code has mixed-magnitude quantities in Boletos
+    # (proving some rows were truncated, vs. all anchors being inflated OCR artifacts).
+    if parsed_abs > 0 and code_mixed_magnitude:
+        ratio_1000 = anchor_abs / parsed_abs
+        if 900 <= ratio_1000 <= 1100:
+            return True
+
     digits = re.sub(r'\D', '', raw_text)
     anchor_digits = str(abs(int(anchor_qty)))
     if digits and anchor_digits.startswith(digits) and len(anchor_digits) > len(digits):
@@ -465,8 +515,6 @@ def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_ancho
             return False
         return True
 
-    parsed_abs = abs(parsed_num)
-    anchor_abs = abs(float(anchor_qty))
     if parsed_abs == 0:
         return True
 
@@ -1226,6 +1274,7 @@ def process_visual_sheet(
     sheet_name: str,
     quantity_anchors: Optional[Dict[Tuple[int, str, str, str], int]] = None,
     code_anchor_evidence: Optional[Dict[int, int]] = None,
+    code_mixed_magnitude: Optional[Dict[int, bool]] = None,
 ) -> None:
     """
     Process a Visual format sheet:
@@ -1324,6 +1373,16 @@ def process_visual_sheet(
                 if is_numeric_column(header_str) or is_integer_column(header_str):
                     cell.value = 0
 
+        # Zero out gastos when it is nearly equal to bruto (column-width OCR artifact).
+        if gastos_col and bruto_col:
+            try:
+                _g = float(ws.cell(row, gastos_col).value or 0)
+                _b = float(ws.cell(row, bruto_col).value or 0)
+                if _b != 0 and _g != 0 and abs(_g / _b) > 0.9:
+                    ws.cell(row, gastos_col).value = 0
+            except (ValueError, TypeError):
+                pass
+
         if cantidad_col and precio_col and bruto_col:
             raw_qty = raw_row_values[cantidad_col - 1]
             qty_value = ws.cell(row, cantidad_col).value
@@ -1349,6 +1408,7 @@ def process_visual_sheet(
                     anchor_qty,
                     code_anchor_evidence=(code_anchor_evidence or {}).get(_normalize_visual_code(ws.cell(row, codigo_col).value) or -1, 0),
                     operacion=ws.cell(row, 6).value,
+                    code_mixed_magnitude=(code_mixed_magnitude or {}).get(_normalize_visual_code(ws.cell(row, codigo_col).value) or -1, False),
                 ):
                     ws.cell(row, cantidad_col).value = anchor_qty
                     qty_value = anchor_qty
@@ -1641,6 +1701,7 @@ def postprocess_visual_workbook(wb: Workbook) -> Workbook:
 
     quantity_anchors = _build_visual_quantity_anchors(wb)
     code_anchor_evidence = _build_visual_code_anchor_evidence(wb['Boletos']) if 'Boletos' in wb.sheetnames else {}
+    code_mixed_magnitude = _build_code_mixed_magnitude(wb['Boletos']) if 'Boletos' in wb.sheetnames else {}
 
     if 'Boletos' in wb.sheetnames:
         process_visual_sheet(
@@ -1648,6 +1709,7 @@ def postprocess_visual_workbook(wb: Workbook) -> Workbook:
             'Boletos',
             quantity_anchors=quantity_anchors,
             code_anchor_evidence=code_anchor_evidence,
+            code_mixed_magnitude=code_mixed_magnitude,
         )
     
     console.print("[green]✓ Post-processing complete[/green]")

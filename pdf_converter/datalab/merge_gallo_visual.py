@@ -1390,7 +1390,12 @@ class GalloVisualMerger:
                 gastos_num = float(gastos or 0)
             except:
                 gastos_num = 0
-            
+
+            # Zero out gastos when it is nearly equal to bruto (column-width OCR artifact).
+            if bruto != 0 and gastos_num != 0 and abs(gastos_num / bruto) > 0.9:
+                gastos_num = 0
+                ws.cell(row, 15, 0)
+
             if cantidad_num > 0:
                 neto = cantidad_num * precio_nominal + gastos_num
             else:
