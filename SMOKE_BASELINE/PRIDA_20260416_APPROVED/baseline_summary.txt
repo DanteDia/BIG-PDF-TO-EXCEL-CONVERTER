@@ -1,0 +1,47 @@
+PRIDA 10488 approved baseline – 2026-04-16 17:50
+Gallo : IG_10488.xlsx
+Visual: 10488bolsa.xlsx
+Values: 10488_PRIDA_baseline_values.xlsx
+
+Sheets:
+  Posicion Inicial Gallo: 19 rows x 22 cols
+  Posicion Final Gallo: 3 rows x 22 cols
+  Boletos: 61 rows x 20 cols
+  Cauciones Tomadoras: 37 rows x 17 cols
+  Cauciones Colocadoras: 2 rows x 17 cols
+  Rentas y Dividendos Gallo: 32 rows x 20 cols
+  Resultado Ventas ARS: 25 rows x 27 cols
+  Resultado Ventas USD: 37 rows x 29 cols
+  Rentas Dividendos ARS: 12 rows x 15 cols
+  Rentas Dividendos USD: 21 rows x 15 cols
+  FCI: 1 rows x 11 cols
+  Opciones: 1 rows x 12 cols
+  Futuros: 1 rows x 4 cols
+  Pagare_CPD: 1 rows x 14 cols
+  Resumen: 3 rows x 11 cols
+  Posicion Titulos: 4 rows x 7 cols
+  EspeciesVisual: 16258 rows x 18 cols
+  EspeciesGallo: 2272 rows x 26 cols
+  Cotizacion Dolar Historica: 3490 rows x 3 cols
+  PreciosInicialesEspecies: 726 rows x 10 cols
+  RatiosCedearsAcciones: 336 rows x 3 cols
+
+Resumen:
+  Row 1: ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Pagare/CPD', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total']
+  Row 2: ['ARS', 37630074.17641998, 0, 0, 0, 3511.729999999999, 0, 0, -97417.52000000328, 0, 37536168.386419974]
+  Row 3: ['USD', 135953.62937958405, 0, 0, 530.6400000000001, 0.02000000000000002, 0, 0, -1165.8700000000165, 8.52, 135326.93937958402]
+
+Boletos: 60 data rows
+Key boletos:
+  B=42583: PN=1.3090000000000002, Moneda=Dolar MEP, Bruto=3998.9950000000003
+  B=42598: PN=1.13269, Moneda=Dolar MEP, Bruto=-3460.36795
+  B=42580: PN=1.2860800000000001, Moneda=Pesos, Bruto=4998.9929600000005
+  B=42582: PN=1.2853700000000001, Moneda=Pesos, Bruto=-4996.233190000001
+
+Protected invariants:
+- B=42583  Moneda=Dolar MEP  PN=1.309     Bruto=3998.995  (VENTA USD override)
+- B=42598  Moneda=Dolar MEP  PN=1.13269   Bruto=-3460.368 (VENTA USD)
+- B=42580  Moneda=Pesos      PN=1.28608   Bruto=4998.993  (normal Pesos)
+- Synthetic initial positions for 81086/81090/81092/81274 from TRF history
+- 81090 Resultado Ventas USD: gains (not losses) from TRF cost basis
+- Full workbook values compared cell-by-cell by smoke test.
