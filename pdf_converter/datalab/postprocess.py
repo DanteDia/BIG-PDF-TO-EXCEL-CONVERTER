@@ -149,7 +149,12 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
     elif re.match(r'^\d{1,3}(\.\d{3})+,\d{3}$', value):
         integer_part, decimal_group = value.rsplit(',', 1)
         digits = re.sub(r'\D', '', integer_part)
-        if is_negative or len(digits) >= 6:
+        if re.match(r'^0+$', decimal_group):
+            # All-zero decimal (e.g. "580.000,000") → European 580000.000
+            # NOT garbled thousands 580.000.000.  OCR options often emit
+            # trailing decimal zeros that look like a thousands group.
+            value = integer_part.replace('.', '') + '.' + decimal_group
+        elif is_negative or len(digits) >= 6:
             value = integer_part + '.' + decimal_group
     # Strip any remaining trailing comma or period (OCR truncation)
     value = value.rstrip(',').rstrip('.')
