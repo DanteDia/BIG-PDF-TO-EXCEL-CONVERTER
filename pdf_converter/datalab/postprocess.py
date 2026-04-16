@@ -277,7 +277,7 @@ def _normalize_visual_currency_key(value) -> str:
         return 'pesos'
     if 'cable' in text or 'dolar ca' in text:
         return 'dolar cable'
-    if 'mep' in text:
+    if 'mep' in text or text.startswith('dolar me'):
         return 'dolar mep'
     if 'dolar' in text or 'dólar' in text or text == 'usd':
         return 'dolar'
@@ -494,6 +494,11 @@ def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_ancho
 
     if float(anchor_qty) == parsed_num:
         return False
+
+    # Quantities must always be integers. If parsed qty is non-integer and
+    # the anchor is integer, unconditionally accept the anchor.
+    if not float(parsed_num).is_integer() and float(anchor_qty).is_integer():
+        return True
 
     raw_text = str(raw_qty or '').strip()
     has_strong_anomaly = _is_strong_visual_quantity_anomaly(raw_qty)
@@ -1301,15 +1306,17 @@ def process_visual_sheet(
     codigo_col = None
     gastos_col = None
     neto_col = None
+    # Find cantidad column for ALL sheets (integer enforcement is universal)
+    for idx, header_str in enumerate(headers_lower, start=1):
+        if header_str == 'cantidad':
+            cantidad_col = idx
+        elif header_str == 'precio':
+            precio_col = idx
+        elif header_str == 'bruto':
+            bruto_col = idx
     if sheet_name.lower() == 'boletos':
         for idx, header_str in enumerate(headers_lower, start=1):
-            if header_str == 'cantidad':
-                cantidad_col = idx
-            elif header_str == 'precio':
-                precio_col = idx
-            elif header_str == 'bruto':
-                bruto_col = idx
-            elif 'boleto' in header_str:
+            if 'boleto' in header_str:
                 boleto_col = idx
             elif header_str == 'moneda':
                 moneda_col = idx
@@ -1425,6 +1432,43 @@ def process_visual_sheet(
                             precio_value,
                             ws.cell(row, gastos_col).value,
                         )
+
+        # Universal integer enforcement: quantities are always integers.
+        # Runs for ALL sheets with a cantidad column, after all rescue attempts.
+        if cantidad_col:
+            qty_value = ws.cell(row, cantidad_col).value
+            try:
+                qty_float = float(qty_value or 0)
+            except (ValueError, TypeError):
+                qty_float = 0.0
+            if qty_float != 0 and not qty_float.is_integer():
+                precio_for_derive = ws.cell(row, precio_col).value if precio_col else None
+                bruto_for_derive = ws.cell(row, bruto_col).value if bruto_col else None
+                derived = _derive_integer_quantity_from_bruto(qty_float, precio_for_derive, bruto_for_derive)
+                if derived is not None:
+                    ws.cell(row, cantidad_col).value = derived
+                else:
+                    ws.cell(row, cantidad_col).value = round(qty_float)
+
+
+def _derive_integer_quantity_from_bruto(qty, precio, bruto) -> Optional[int]:
+    """Derive integer quantity from bruto/precio when OCR truncated the cantidad."""
+    try:
+        precio_num = abs(float(precio or 0))
+        bruto_num = abs(float(bruto or 0))
+    except (ValueError, TypeError):
+        return None
+    if precio_num == 0 or bruto_num == 0:
+        return None
+    sign = -1 if float(qty) < 0 else 1
+    qty_int = round(bruto_num / precio_num)
+    if qty_int == 0:
+        return None
+    # Validate: derived qty × precio must be within 5% of bruto
+    expected = qty_int * precio_num
+    if bruto_num > 0 and abs(expected - bruto_num) / bruto_num <= 0.05:
+        return sign * qty_int
+    return None
 
 
 def process_precio_tenencias_sheet(ws: Worksheet) -> None:

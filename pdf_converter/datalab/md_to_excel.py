@@ -357,16 +357,17 @@ class MarkdownTableParser:
     
     def _extract_instrument_info(self, text: str) -> tuple[Optional[str], Optional[str]]:
         """
-        Extract instrument name and code from a bold line like:
-        '<b>PAMPA ENERGIA S.A. ESCRIT. 1 VOTO - Pesos / 457</b>'
+        Extract instrument name and code from a bold line ending with '/ CODE'.
+        CODE is 3-6 digits with dots as thousand separators (e.g., 710, 9.321, 81.088).
         Returns: (instrument_name, cod_instrum)
         """
         import re
         # Remove bold tags
         text = re.sub(r'</?b>', '', text).strip()
         
-        # Try to match pattern: "INSTRUMENT NAME - Currency / CODE"
-        match = re.match(r'^(.+?)\s*-\s*[^/]+/\s*(\d+(?:\.\d+)?)\s*$', text)
+        # Match anything ending with "/ CODE" where CODE is digits with optional thousand-dot groups.
+        # Uses greedy .+ so the LAST "/ digits" wins over date slashes like 15/09/26.
+        match = re.match(r'^(.+)\s*/\s*(\d{1,3}(?:\.\d{3})*)\s*$', text)
         if match:
             return (match.group(1).strip(), match.group(2).replace('.', ''))
         
@@ -571,8 +572,8 @@ class MarkdownTableParser:
                             tipo_match = re.match(r'^(\d+)\s*/\s*(.+)$', clean_text)
                             if tipo_match:
                                 current_tipo_instrumento = tipo_match.group(2).strip()
-                            elif ' - ' in clean_text and clean_text.endswith(')') == False:
-                                # This is instrument line like "PAMPA ENERGIA S.A. ... - Pesos / 457"
+                            elif re.search(r'/\s*\d{1,3}(?:\.\d{3})*\s*$', clean_text):
+                                # Instrument line ending with "/ CODE" (3-6 digit code)
                                 instr, cod = self._extract_instrument_info(first_cell)
                                 if instr:
                                     current_instrumento = instr
@@ -589,6 +590,12 @@ class MarkdownTableParser:
                                 tipo_match = re.match(r'^\d+\s*/\s*(.+)$', clean_text)
                                 if tipo_match:
                                     current_tipo_instrumento = tipo_match.group(1).strip()
+                            elif re.search(r'/\s*\d{1,3}(?:\.\d{3})*\s*$', clean_text):
+                                # Instrument line ending with "/ CODE" (3-6 digit code)
+                                instr, cod = self._extract_instrument_info(first_cell)
+                                if instr:
+                                    current_instrumento = instr
+                                    current_cod_instrum = cod
                             elif ' - ' not in clean_text:
                                 # Simple tipo like "Cedears", "Acciones", "Títulos Públicos", "Obligaciones Negociables"
                                 current_tipo_instrumento = clean_text
