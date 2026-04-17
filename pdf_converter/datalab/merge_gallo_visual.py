@@ -58,6 +58,39 @@ class GalloVisualMerger:
         # Usar matching parcial para los términos de la lista
         return any(t in tipo_lower for t in self.TIPOS_PRECIO_CADA_100)
 
+    def _resolve_option_underlying(self, option_ticker: str) -> Optional[Tuple[str, str]]:
+        """Map an option ticker to the underlying stock (code, ticker).
+
+        Argentine option tickers follow the pattern:
+            ESPECIE + C|V + STRIKE + MES_LETTER
+        e.g. YPFC49000D → prefix=YPF, underlying YPFD (code 710).
+
+        Returns (code_clean, ticker) or None if not resolvable.
+        """
+        if not option_ticker:
+            return None
+        m = re.match(r'^([A-Z]+?)([CV])(\d+)([A-X])$', option_ticker.strip().upper())
+        if not m:
+            return None
+        prefix = m.group(1)
+
+        candidates = []
+        for code, data in self._especies_visual_cache.items():
+            if data.get('tipo_especie') == 'Acciones':
+                ticker = data.get('ticker') or ''
+                if ticker.upper().startswith(prefix):
+                    candidates.append((code, ticker))
+
+        if not candidates:
+            return None
+
+        # Prefer exact prefix match, then shortest ticker
+        for code, ticker in candidates:
+            if ticker.upper() == prefix:
+                return (code, ticker)
+        candidates.sort(key=lambda x: len(x[1]))
+        return candidates[0]
+
     def _is_dollar_related(self, *values) -> bool:
         """Determina si los textos refieren a operatoria/activos dolarizados."""
         text = " ".join(str(v or "") for v in values).lower()
@@ -2535,6 +2568,29 @@ class GalloVisualMerger:
                         interes = 0
                         neto_fuente = _tc   # approx neto ≈ bruto (gastos zeroed)
                         auditoria += " | SHIFT_CORRECTED"
+
+                # --- Ejercicio handling ---
+                # Option exercises produce two Visual rows with the same boleto:
+                #   qty > 0 = actual shares received (keep, map to underlying stock)
+                #   qty < 0 = option contracts closed (discard from Boletos)
+                oper_lower = str(operacion).lower()
+                if 'ejercicio' in oper_lower:
+                    _qty_ej = self._to_float(cantidad)
+                    if _qty_ej < 0:
+                        # Contract-closure row — skip it entirely
+                        continue
+                    # Shares-received row — resolve underlying stock
+                    option_ticker_orig = str(instrumento or '')
+                    resolved = self._resolve_option_underlying(option_ticker_orig)
+                    if resolved:
+                        underlying_code, underlying_ticker = resolved
+                        try:
+                            cod_num = int(underlying_code)
+                        except (ValueError, TypeError):
+                            cod_num = underlying_code
+                        instrumento = underlying_ticker
+                        tipo_instrumento = 'Acciones'
+                        auditoria += f" | EJERCICIO_MAPPED:{option_ticker_orig}->{underlying_ticker}(cod={underlying_code})"
 
                 all_transactions.append({
                     'cod_instrum': cod_num,  # Forzado a número
