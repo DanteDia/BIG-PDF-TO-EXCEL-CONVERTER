@@ -1,0 +1,41 @@
+J_STURMAN 2797 approved baseline – 2026-04-17 14:01
+Visual: 2797bolsa_fixed4.xlsx
+Values: 2797_J_STURMAN_baseline_values.xlsx
+
+Sheets:
+  Posicion Inicial Gallo: 1 rows x 22 cols
+  Posicion Final Gallo: 1 rows x 22 cols
+  Boletos: 37 rows x 20 cols
+  Cauciones Tomadoras: 796 rows x 17 cols
+  Cauciones Colocadoras: 5 rows x 17 cols
+  Rentas y Dividendos Gallo: 14 rows x 20 cols
+  Resultado Ventas ARS: 24 rows x 27 cols
+  Resultado Ventas USD: 12 rows x 29 cols
+  Rentas Dividendos ARS: 14 rows x 15 cols
+  Rentas Dividendos USD: 1 rows x 15 cols
+  FCI: 1 rows x 11 cols
+  Opciones: 5 rows x 12 cols
+  Futuros: 1 rows x 4 cols
+  Pagare_CPD: 1 rows x 14 cols
+  Resumen: 3 rows x 11 cols
+  Posicion Titulos: 13 rows x 7 cols
+  EspeciesVisual: 16258 rows x 18 cols
+  EspeciesGallo: 2272 rows x 26 cols
+  Cotizacion Dolar Historica: 3490 rows x 3 cols
+  PreciosInicialesEspecies: 726 rows x 10 cols
+  RatiosCedearsAcciones: 336 rows x 3 cols
+
+Resumen:
+  Row 1: ['Moneda', 'Ventas', 'FCI', 'Opciones', 'Rentas', 'Dividendos', 'Pagare/CPD', 'Futuros', 'Cau (Tom)', 'Cau (Col)', 'Total']
+  Row 2: ['ARS', 5032414.551299988, 0, -16217743.8, 9681351.35, 33879.659999999996, 0, 0, -18200369.959999997, 340550.24, -19329917.958700012]
+  Row 3: ['USD', -1851.5669408170784, 0, 0, 0, 0, 0, 0, -1723.5399999999997, 0, -3575.106940817078]
+
+Boletos: 36 data rows
+Key boletos:
+  Row 37: oper=ejercicio compra titular, code=710, especie=YPFD, qty=2000
+
+Protected invariants:
+- Ejercicio Compra Titular qty=-20 contract closure row is ABSENT from Boletos
+- Ejercicio qty=2000 row is mapped to YPFD (code 710) as Acciones
+- YPFC49000D / YPFC55000D resolve to YPFD via _resolve_option_underlying()
+- Full workbook values compared cell-by-cell by smoke test.
