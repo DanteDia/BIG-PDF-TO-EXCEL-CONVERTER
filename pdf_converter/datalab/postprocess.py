@@ -320,6 +320,8 @@ def _build_visual_quantity_anchors(wb: Workbook) -> Dict[Tuple[int, str, str, st
         currency_col = next((i for i, h in enumerate(headers, start=1) if h == 'moneda'), None)
         oper_col = next((i for i, h in enumerate(headers, start=1) if 'tipo oper' in h), None)
         qty_col = next((i for i, h in enumerate(headers, start=1) if h == 'cantidad'), None)
+        precio_col = next((i for i, h in enumerate(headers, start=1) if h == 'precio'), None)
+        bruto_col = next((i for i, h in enumerate(headers, start=1) if h == 'bruto'), None)
 
         if not all([code_col, concert_col, currency_col, oper_col, qty_col]):
             continue
@@ -341,9 +343,53 @@ def _build_visual_quantity_anchors(wb: Workbook) -> Dict[Tuple[int, str, str, st
             if qty_int is None:
                 continue
 
+            # Bruto-validated 1000× deflation: OCR may add an extra ".000" group
+            # (e.g. "512.974.026.000" → 512974026000 instead of 512974026).
+            if precio_col and bruto_col:
+                deflated = qty_int // 1000
+                if deflated != 0 and (qty_int % 1000 == 0):
+                    try:
+                        precio_num = abs(float(ws.cell(row, precio_col).value or 0))
+                        bruto_num = abs(float(ws.cell(row, bruto_col).value or 0))
+                        if precio_num > 0 and bruto_num > 0:
+                            err_orig = abs(abs(qty_int) * precio_num - bruto_num) / bruto_num
+                            err_defl = abs(abs(deflated) * precio_num - bruto_num) / bruto_num
+                            if err_orig > 0.50 and err_defl <= 0.05:
+                                qty_int = deflated
+                    except (ValueError, TypeError):
+                        pass
+
             current = anchors.get(key)
             if current is None or abs(qty_int) < abs(current):
                 anchors[key] = qty_int
+
+    # Cross-currency 1000× sibling deflation: when two anchors for the same
+    # code+date differ by ~1000×, the larger is likely an OCR ".000" artifact.
+    from collections import defaultdict
+    code_date_groups: Dict[Tuple[int, str], List[Tuple]] = defaultdict(list)
+    for key, qty_int in anchors.items():
+        code_date_groups[(key[0], key[1])].append(key)
+
+    for (code, date), keys in code_date_groups.items():
+        if len(keys) < 2:
+            continue
+        # Pairwise 1000× check: if entry A is ~1000× entry B, deflate A.
+        abs_vals = {k: abs(anchors[k]) for k in keys}
+        for k_large in keys:
+            v_large = abs_vals[k_large]
+            if v_large == 0:
+                continue
+            for k_small in keys:
+                if k_small is k_large:
+                    continue
+                v_small = abs_vals[k_small]
+                if v_small == 0:
+                    continue
+                ratio = v_large / v_small
+                if 900 <= ratio <= 1100:
+                    sign = 1 if anchors[k_large] > 0 else -1
+                    anchors[k_large] = sign * v_small
+                    break
 
     return anchors
 
