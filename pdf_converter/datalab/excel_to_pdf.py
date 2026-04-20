@@ -500,7 +500,7 @@ class ExcelToPdfExporter:
             
             # Anchos de columnas (total ~270mm para landscape A4)
             # Fecha, Liquid, Boleto, Mon, Operación, Cód, Instrumento, Cantidad, Precio, TC, Bruto, Interés, Gastos, Neto
-            col_widths = [16, 16, 12, 16, 18, 12, 48, 22, 18, 14, 26, 18, 16, 26]
+            col_widths = [16, 16, 12, 16, 27, 12, 39, 22, 18, 14, 26, 18, 16, 26]
             
             table = self._create_table(table_headers, table_rows, col_widths, col_formatters, font_size=5)
             if table:
@@ -597,7 +597,7 @@ class ExcelToPdfExporter:
             
             # Anchos de columna ajustados
             # Instr, Cód, Fecha, TipoOp, Cantidad, Precio, Bruto, Gastos, IVA, Resultado
-            col_widths = [42, 14, 16, 22, 22, 22, 26, 20, 18, 28]
+            col_widths = [42, 14, 16, 28, 22, 18, 26, 20, 18, 26]
             
             table = self._create_table(table_headers, table_rows, col_widths, col_formatters, font_size=5)
             if table:

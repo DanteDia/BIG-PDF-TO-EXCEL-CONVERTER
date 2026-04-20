@@ -1425,7 +1425,20 @@ class GalloVisualMerger:
                 cantidad_num = float(cantidad or 0)
             except:
                 cantidad_num = 0
-            
+
+            # Visual USD micro-price: derive effective price from OCR bruto.
+            # When qty was rescued from Resultado Ventas, the rounded OCR price
+            # (e.g. 0.0009) × large qty overshoots.  OCR bruto is more accurate;
+            # derive price = bruto / qty so downstream calculations stay consistent.
+            if (self._is_visual_origin(origen)
+                    and self._is_visual_usd_micro_price(precio_num, tipo_instrumento, origen, moneda)
+                    and abs(bruto_fuente) > 0
+                    and abs(cantidad_num) > 0):
+                effective_price = abs(bruto_fuente) / abs(cantidad_num)
+                if 0 < effective_price < 0.01:
+                    precio_nominal = effective_price
+                    ws.cell(row, col_precio_nominal, precio_nominal)
+
             bruto = cantidad_num * precio_nominal
             ws.cell(row, 13, bruto)
             
