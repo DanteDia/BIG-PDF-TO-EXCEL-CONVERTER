@@ -2535,7 +2535,44 @@ class GalloVisualMerger:
         # Agregar transacciones de Visual
         try:
             visual_boletos = self.visual_wb['Boletos']
+
+            # --- Ejercicio dedup pre-pass ---
+            # Exercise boletos can appear duplicated in Visual with the same boleto
+            # number: one row carries the underlying nominal (larger |qty|, real)
+            # and the other carries only the contract count (smaller |qty|, noise).
+            # Also covers the Sturman 2797 case where one leg is negative (closure).
+            # Rule: for each ejercicio boleto number, keep the row whose |qty| is
+            # largest; when a positive row exists alongside a negative one, prefer
+            # the positive one (shares received). Rows thus marked are skipped
+            # inside the main iterator below.
+            ejercicio_groups: Dict = {}
+            for _row in range(2, visual_boletos.max_row + 1):
+                _oper = str(visual_boletos.cell(_row, 6).value or '').lower()
+                if 'ejercicio' not in _oper:
+                    continue
+                _bol = visual_boletos.cell(_row, 4).value
+                if _bol in (None, ''):
+                    continue
+                _bol_key = str(_bol).strip()
+                _qty_val = self._to_float(visual_boletos.cell(_row, 9).value)
+                ejercicio_groups.setdefault(_bol_key, []).append((_row, _qty_val))
+
+            _ejercicio_skip_rows: set = set()
+            for _bol_key, _rows in ejercicio_groups.items():
+                if len(_rows) < 2:
+                    continue
+                # Prefer positive-qty rows when any positive exists (covers 2797).
+                _positives = [r for r in _rows if r[1] > 0]
+                _candidates = _positives if _positives else _rows
+                # Winner: row with the largest |qty| among candidates (covers Salvo).
+                _winner = max(_candidates, key=lambda r: abs(r[1]))
+                for _r, _q in _rows:
+                    if _r != _winner[0]:
+                        _ejercicio_skip_rows.add(_r)
+
             for row in range(2, visual_boletos.max_row + 1):
+                if row in _ejercicio_skip_rows:
+                    continue
                 tipo_instrumento = visual_boletos.cell(row, 1).value
                 concertacion = visual_boletos.cell(row, 2).value
                 liquidacion = visual_boletos.cell(row, 3).value
@@ -2594,15 +2631,12 @@ class GalloVisualMerger:
                         auditoria += " | SHIFT_CORRECTED"
 
                 # --- Ejercicio handling ---
-                # Option exercises produce two Visual rows with the same boleto:
-                #   qty > 0 = actual shares received (keep, map to underlying stock)
-                #   qty < 0 = option contracts closed (discard from Boletos)
+                # Duplicate/closure rows were already filtered by the pre-pass
+                # above (see `_ejercicio_skip_rows`). The surviving row is the
+                # one with the largest |qty| (underlying nominal) or, when
+                # available, the positive-qty row (shares received).
                 oper_lower = str(operacion).lower()
                 if 'ejercicio' in oper_lower:
-                    _qty_ej = self._to_float(cantidad)
-                    if _qty_ej < 0:
-                        # Contract-closure row — skip it entirely
-                        continue
                     # Shares-received row — resolve underlying stock
                     option_ticker_orig = str(instrumento or '')
                     resolved = self._resolve_option_underlying(option_ticker_orig)
