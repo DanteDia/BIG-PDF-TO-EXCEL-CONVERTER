@@ -1,0 +1,33 @@
+KOLTAN 13353 approved baseline - 2026-04-20 19:51
+Gallo : 13353_gallo_frozen.xlsx
+Visual: 13353_visual_frozen.xlsx
+Precio: 13353_precio_tenencias_frozen.xlsx
+Values: 13353_KOLTAN_baseline_values.xlsx
+
+Sheets:
+  Posicion Inicial Gallo: 6 rows x 22 cols
+  Posicion Final Gallo: 7 rows x 22 cols
+  Boletos: 79 rows x 20 cols
+  Cauciones Tomadoras: 193 rows x 17 cols
+  Cauciones Colocadoras: 1 rows x 17 cols
+  Rentas y Dividendos Gallo: 1 rows x 20 cols
+  Resultado Ventas ARS: 5 rows x 27 cols
+  Resultado Ventas USD: 73 rows x 29 cols
+  Rentas Dividendos ARS: 1 rows x 15 cols
+  Rentas Dividendos USD: 1 rows x 15 cols
+  FCI: 1 rows x 11 cols
+  Opciones: 1 rows x 12 cols
+  Futuros: 3 rows x 4 cols
+  Pagare_CPD: 1 rows x 14 cols
+  Resumen: 3 rows x 11 cols
+  Posicion Titulos: 3 rows x 7 cols
+  EspeciesVisual: 16258 rows x 18 cols
+  EspeciesGallo: 2272 rows x 26 cols
+  Cotizacion Dolar Historica: 3490 rows x 3 cols
+  PreciosInicialesEspecies: 726 rows x 10 cols
+  PrecioTenenciasIniciales: 10 rows x 9 cols
+  RatiosCedearsAcciones: 336 rows x 3 cols
+
+Protected invariants:
+- No quantity > 10,000,000,000 in non-aux sheets
+- Full workbook values compared cell-by-cell by smoke test

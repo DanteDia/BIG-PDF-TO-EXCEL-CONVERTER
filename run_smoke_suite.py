@@ -191,13 +191,14 @@ def main() -> int:
     _check_aguiar_same_input(failures)
     _check_canullo_approved(failures)
 
-    # Run dedicated smoke tests (Sigal, Prida, Sturman 2797, Sturman 11688)
+    # Run dedicated smoke tests (Sigal, Prida, Sturman 2797, Sturman 11688, Koltan 13353)
     import subprocess
     for script in [
         "smoke_test_sigal.py",
         "smoke_test_prida.py",
         "smoke_test_sturman.py",
         "smoke_test_sturman_11688.py",
+        "smoke_test_koltan_13353.py",
     ]:
         script_path = ROOT / script
         if script_path.exists():
@@ -226,6 +227,7 @@ def main() -> int:
             "PRIDA 11797: cell-by-cell OK",
             "STURMAN 2797: cell-by-cell OK",
             "STURMAN 11688: cell-by-cell OK + micro-price guard + inflation guard",
+            "KOLTAN 13353: cell-by-cell OK + inflation guard",
         ],
     )
     return 0
