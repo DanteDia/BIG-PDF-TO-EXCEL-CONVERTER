@@ -628,7 +628,7 @@ def _maybe_rescue_visual_bruto(current_bruto, qty_value, precio_value):
         return expected
 
     ratio = abs(expected) / abs(bruto_num) if bruto_num else float('inf')
-    if ratio >= 10 or ratio <= 0.1:
+    if ratio >= 10:
         return expected
 
     return current_bruto
@@ -654,7 +654,7 @@ def _maybe_rescue_visual_neto(current_neto, qty_value, precio_value, gastos_valu
         return expected_neto
 
     ratio = abs(expected_neto) / abs(neto_num) if neto_num else float('inf')
-    if ratio >= 10 or ratio <= 0.1:
+    if ratio >= 10:
         return expected_neto
 
     return current_neto
