@@ -1672,6 +1672,17 @@ def export_excel_to_pdf(excel_path: str, output_path: str = None,
     Returns:
         bytes del PDF generado
     """
+    # Auto-prefer the materialized values workbook when available.
+    # The formulas workbook contains unresolved Excel formula strings that
+    # render as empty/wrong in openpyxl; the values counterpart has the
+    # fully computed data.
+    _p = Path(excel_path)
+    if not _p.stem.endswith('_values'):
+        _values_path = _p.parent / f"{_p.stem}_values{_p.suffix}"
+        if _values_path.exists():
+            excel_path = str(_values_path)
+            print(f"[INFO] Using materialized values workbook: {_values_path.name}")
+
     cliente_info = {}
     if cliente_numero:
         cliente_info['numero'] = cliente_numero

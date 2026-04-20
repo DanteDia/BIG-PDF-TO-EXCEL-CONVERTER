@@ -224,6 +224,8 @@ def parse_visual_quantity_value(value) -> Optional[float]:
     if raw.startswith('('):
         is_negative = True
         raw = raw[1:]
+        if raw.endswith(')'):
+            raw = raw[:-1]
 
     raw = fix_trailing_negative(raw)
     if raw.startswith('-'):
@@ -240,6 +242,17 @@ def parse_visual_quantity_value(value) -> Optional[float]:
     thousands_only = re.match(r'^\d{1,3}(?:\.\d{3})+$', raw)
     if thousands_only:
         result = int(raw.replace('.', ''))
+        return -result if is_negative else result
+
+    # Truncated thousands: last dot-group has 1-2 digits instead of 3.
+    # OCR column-width truncation turns e.g. "1.170.588.235" into "1.170.588.23".
+    # Quantities are always integers, so pad with trailing zeros to recover the
+    # full integer. This takes priority over interpreting the tail as a decimal.
+    truncated_thousands = re.match(r'^(\d{1,3}(?:\.\d{3})+)\.(\d{1,2})$', raw)
+    if truncated_thousands:
+        full_part = truncated_thousands.group(1).replace('.', '')
+        truncated_part = truncated_thousands.group(2)
+        result = int(full_part + truncated_part + '0' * (3 - len(truncated_part)))
         return -result if is_negative else result
 
     parsed = parse_parentheses_negative(value)
@@ -542,19 +555,38 @@ def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_ancho
         return False
 
     # Quantities must always be integers. If parsed qty is non-integer and
-    # the anchor is integer, unconditionally accept the anchor.
+    # the anchor is integer, accept the anchor when in the same magnitude
+    # or a clean 1000× truncation.  Reject wildly different anchors that
+    # happen to share the same code+date key but belong to another trade.
     if not float(parsed_num).is_integer() and float(anchor_qty).is_integer():
-        return True
+        _p = abs(parsed_num)
+        _a = abs(float(anchor_qty))
+        if _p > 0:
+            _r = _a / _p
+            if 0.5 <= _r <= 2 or 900 <= _r <= 1100:
+                return True
+        else:
+            return True  # parsed is 0, anchor has value → accept
 
     raw_text = str(raw_qty or '').strip()
     has_strong_anomaly = _is_strong_visual_quantity_anomaly(raw_qty)
     allow_clean_propagation = code_anchor_evidence >= 2 and 'contado continuo' in _normalize_visual_operation_key(operacion)
 
-    if has_strong_anomaly:
-        return True
-
     parsed_abs = abs(parsed_num)
     anchor_abs = abs(float(anchor_qty))
+
+    if has_strong_anomaly:
+        # Strong raw anomaly → trust anchor, but only when the magnitude is
+        # compatible (same order or clean 1000× truncation).  This prevents
+        # accepting an anchor from a different trade that happens to share
+        # the same code+date key.
+        if parsed_abs > 0:
+            _r = anchor_abs / parsed_abs
+            if 0.5 <= _r <= 2 or 900 <= _r <= 1100:
+                return True
+            # Fall through to more nuanced checks below.
+        else:
+            return True
 
     # 1000× ratio indicates exactly one ".000" group was lost to column truncation.
     # Only trust this when the code has mixed-magnitude quantities in Boletos
@@ -575,7 +607,7 @@ def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_ancho
         return True
 
     ratio = max(anchor_abs / parsed_abs, parsed_abs / anchor_abs)
-    return allow_clean_propagation and ratio >= 10
+    return allow_clean_propagation and 10 <= ratio <= 1100
 
 
 def _maybe_rescue_visual_bruto(current_bruto, qty_value, precio_value):
@@ -1451,6 +1483,22 @@ def process_visual_sheet(
                 best_qty = _choose_best_boletos_quantity(raw_qty, qty_value, precio_value, bruto_value)
                 ws.cell(row, cantidad_col).value = best_qty
                 qty_value = best_qty
+
+            # When qty was corrected (e.g. truncated-thousands → integer),
+            # bruto and neto may also be truncated by the same column width.
+            # Rescue them using qty × precio.
+            if isinstance(raw_qty, str) and sheet_name.lower() == 'boletos':
+                rescued_bruto = _maybe_rescue_visual_bruto(bruto_value, qty_value, precio_value)
+                if rescued_bruto != bruto_value:
+                    ws.cell(row, bruto_col).value = rescued_bruto
+                    bruto_value = rescued_bruto
+                    if neto_col and gastos_col:
+                        ws.cell(row, neto_col).value = _maybe_rescue_visual_neto(
+                            ws.cell(row, neto_col).value,
+                            qty_value,
+                            precio_value,
+                            ws.cell(row, gastos_col).value,
+                        )
 
             if sheet_name.lower() == 'boletos' and quantity_anchors and codigo_col and moneda_col:
                 anchor_qty = _lookup_visual_quantity_anchor(

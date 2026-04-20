@@ -1403,6 +1403,17 @@ class GalloVisualMerger:
             
             # Guardar Precio Nominal en Col 20 (nueva columna después de las 19 originales)
             ws.cell(row, col_precio_nominal, precio_nominal)
+
+            # Futuros: bruto is meaningless (not qty × precio); preserve OCR gastos/neto.
+            if tipo_instrumento and 'futuro' in str(tipo_instrumento).lower():
+                ws.cell(row, col_precio_nominal, precio_num)  # keep original price
+                ws.cell(row, 13, 0)                           # Bruto = 0
+                gastos_ocr = self._to_float(ws.cell(row, 15).value)
+                neto_ocr = self._to_float(ws.cell(row, 16).value)
+                value = gastos_ocr if gastos_ocr != 0 else neto_ocr
+                ws.cell(row, 15, value)
+                ws.cell(row, 16, value)
+                continue
             
             # Capturar monetarios fuente de Visual antes de recomputar.
             bruto_fuente = self._to_float(ws.cell(row, 13).value)
