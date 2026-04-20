@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Sequence
+import sys
 
 from openpyxl import load_workbook
 
@@ -190,6 +191,26 @@ def main() -> int:
     _check_aguiar_same_input(failures)
     _check_canullo_approved(failures)
 
+    # Run dedicated smoke tests (Sigal, Prida, Sturman 2797, Sturman 11688)
+    import subprocess
+    for script in [
+        "smoke_test_sigal.py",
+        "smoke_test_prida.py",
+        "smoke_test_sturman.py",
+        "smoke_test_sturman_11688.py",
+    ]:
+        script_path = ROOT / script
+        if script_path.exists():
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True, text=True, cwd=str(ROOT),
+            )
+            if result.returncode != 0:
+                failures.append(f"{script} FAILED (exit {result.returncode})")
+                # Show last 5 lines of output for diagnostics
+                for line in (result.stdout + result.stderr).strip().splitlines()[-5:]:
+                    failures.append(f"  {line}")
+
     if failures:
         _print_section("SMOKE FAIL", failures)
         return 1
@@ -201,6 +222,10 @@ def main() -> int:
             "SALVO: ARS/USD split consistente y Resultado<=Bruto",
             "AGUIAR same-input: hojas clave y resumen sin desvíos",
             "CANULLO approved: workbook completo sin desvíos",
+            "SIGAL 10374: cell-by-cell OK",
+            "PRIDA 11797: cell-by-cell OK",
+            "STURMAN 2797: cell-by-cell OK",
+            "STURMAN 11688: cell-by-cell OK + micro-price guard + inflation guard",
         ],
     )
     return 0

@@ -1,0 +1,50 @@
+STURMAN 11688 approved baseline – 2026-04-20 14:38
+Gallo : 11688_gallo_frozen.xlsx
+Visual: 11688_visual_frozen.xlsx
+Precio: 11688_precio_tenencias_frozen.xlsx
+Values: 11688_STURMAN_JAVIER_baseline_values.xlsx
+
+Sheets:
+  Posicion Inicial Gallo: 5 rows x 22 cols
+  Posicion Final Gallo: 8 rows x 22 cols
+  Boletos: 196 rows x 20 cols
+  Cauciones Tomadoras: 497 rows x 17 cols
+  Cauciones Colocadoras: 7 rows x 17 cols
+  Rentas y Dividendos Gallo: 6 rows x 20 cols
+  Resultado Ventas ARS: 23 rows x 27 cols
+  Resultado Ventas USD: 172 rows x 29 cols
+  Rentas Dividendos ARS: 3 rows x 15 cols
+  Rentas Dividendos USD: 4 rows x 15 cols
+  FCI: 1 rows x 11 cols
+  Opciones: 1 rows x 12 cols
+  Futuros: 3 rows x 4 cols
+  Pagare_CPD: 1 rows x 14 cols
+  Resumen: 3 rows x 11 cols
+  Posicion Titulos: 5 rows x 7 cols
+  EspeciesVisual: 16258 rows x 18 cols
+  EspeciesGallo: 2272 rows x 26 cols
+  Cotizacion Dolar Historica: 3490 rows x 3 cols
+  PreciosInicialesEspecies: 726 rows x 10 cols
+  PrecioTenenciasIniciales: 39 rows x 9 cols
+  RatiosCedearsAcciones: 336 rows x 3 cols
+
+Micro-price boletos (STU-MICRO-PRICE-RESCUE-BUG-001):
+  Bol 122342: neto=1000000.0 (expected=1000000)
+  Bol 71174: neto=995000.0 (expected=995000)
+  Bol 71873: neto=994975.0 (expected=994975)
+  Bol 72719: neto=999000.0 (expected=999000)
+
+Protected invariants:
+- No quantity > 10,000,000,000 in any sheet (1000x inflation guard)
+- Bol 71174: neto=995,000 (not 1,053,529 — micro-price fix)
+- Bol 71873: neto=994,975 (not 1,053,503 — micro-price fix)
+- Bol 72719: neto=999,000 (not 1,057,765 — micro-price fix)
+- Bol 122342: neto=1,000,000 (not 1,058,824 — micro-price fix)
+- Futuros boletos: bruto=0, neto=gastos (no qty*precio)
+- Boletos Dolar Cable code 9249 qty=757575758 (not 757575758000)
+- Boletos Dolar Cable code 9323 qty=512974026 (not 512974026000)
+- Full workbook values compared cell-by-cell by smoke test
+
+Reference artifacts in this directory:
+- 11688_web_reference_20260420_0242.xlsx: web output BEFORE micro-price fix
+- 11688_web_reference_20260420_1624.pdf: web output AFTER micro-price fix
