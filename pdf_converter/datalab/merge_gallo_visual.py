@@ -549,17 +549,20 @@ class GalloVisualMerger:
                 overrides[cod_clean] = 'ARS'
         return overrides
     
-    def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None, precio_tenencias_path: str = None):
+    def __init__(self, gallo_path: str = None, visual_path: str = None, aux_data_dir: str = None, precio_tenencias_path: str = None):
         """
         Inicializa el merger con las rutas a los archivos.
         
         Args:
-            gallo_path: Ruta al Excel generado de Gallo
+            gallo_path: Ruta al Excel generado de Gallo (opcional para casos Visual-only)
             visual_path: Ruta al Excel generado de Visual
             aux_data_dir: Directorio con hojas auxiliares (default: pdf_converter/datalab/aux_data)
             precio_tenencias_path: Ruta al Excel generado desde el PDF de Precio Tenencias (opcional)
         """
-        self.gallo_path = Path(gallo_path)
+        if not visual_path:
+            raise ValueError("visual_path es obligatorio")
+
+        self.gallo_path = Path(gallo_path) if gallo_path else None
         self.visual_path = Path(visual_path)
         self.precio_tenencias_path = Path(precio_tenencias_path) if precio_tenencias_path else None
         
@@ -568,7 +571,7 @@ class GalloVisualMerger:
         self.aux_data_dir = Path(aux_data_dir)
         
         # Cargar workbooks
-        self.gallo_wb = load_workbook(gallo_path)
+        self.gallo_wb = load_workbook(gallo_path) if gallo_path else self._create_empty_gallo_workbook()
         self.visual_wb = load_workbook(visual_path)
         self.precio_tenencias_wb = load_workbook(precio_tenencias_path) if precio_tenencias_path else None
         
@@ -593,6 +596,12 @@ class GalloVisualMerger:
         
         # Construir caches
         self._build_caches()
+
+    def _create_empty_gallo_workbook(self) -> Workbook:
+        """Crea un workbook Gallo vacío para flujos Visual-only."""
+        wb = Workbook()
+        wb.active.title = 'EMPTY_GALLO'
+        return wb
     
     def _load_aux(self, filename: str) -> Workbook:
         """Carga un archivo auxiliar."""
@@ -827,6 +836,42 @@ class GalloVisualMerger:
             return str(int(float(codigo_str)))
         except:
             return codigo_str
+
+    def _resolve_gallo_coupon_alias(self, cod_especie, especie: str) -> Optional[Dict[str, str]]:
+        """Resuelve cupones Gallo aliasados como `1 + codigo subyacente`.
+
+        Caso validado: Gallo puede emitir un flujo de cupon/dividendo con especie
+        textual tipo `CUPON GGAL` y código `01534`, donde el activo subyacente real
+        es la acción `00534`.
+        """
+        especie_text = str(especie or '').strip()
+        if 'cupon' not in especie_text.lower():
+            return None
+
+        coupon_code = self._clean_codigo(cod_especie)
+        if not coupon_code or not coupon_code.startswith('1') or len(coupon_code) <= 1:
+            return None
+
+        underlying_code = self._clean_codigo(coupon_code[1:])
+        if not underlying_code:
+            return None
+
+        underlying_data = self._especies_visual_cache.get(underlying_code, {})
+        if not underlying_data:
+            return None
+
+        underlying_tipo = str(underlying_data.get('tipo_especie') or '').strip()
+        cashflow_operacion = 'RENTA'
+        if any(token in underlying_tipo.lower() for token in ['accion', 'cedear', 'fci']):
+            cashflow_operacion = 'DIVIDENDO'
+
+        return {
+            'coupon_code': coupon_code,
+            'underlying_code': underlying_code,
+            'underlying_name': underlying_data.get('nombre') or especie_text,
+            'underlying_tipo': underlying_tipo,
+            'cashflow_operacion': cashflow_operacion,
+        }
     
     def _split_especie(self, especie: str) -> Tuple[str, str]:
         """Divide especie en Ticker y resto del nombre."""
@@ -2436,6 +2481,10 @@ class GalloVisualMerger:
                     continue
                 if 'col cau' in operacion_lower:
                     continue
+
+                coupon_alias = self._resolve_gallo_coupon_alias(gallo_ws.cell(row, 2).value, especie)
+                if coupon_alias:
+                    continue
                 
                 # Solo operaciones de compra/venta/trf para Boletos
                 operaciones_validas = ['compra', 'venta', 'cpra', 'canje', 'licitacion', 'trf']
@@ -3060,14 +3109,18 @@ class GalloVisualMerger:
                     continue
                 
                 operacion_lower = str(operacion).lower().strip()
-                
-                # Solo operaciones de rentas/dividendos/amortización
-                if not any(op in operacion_lower for op in self.OPERACIONES_RENTAS):
-                    continue
-                
-                # Extraer datos
                 cod_especie = gallo_ws.cell(row, 2).value
                 especie = gallo_ws.cell(row, 3).value
+                coupon_alias = self._resolve_gallo_coupon_alias(cod_especie, especie)
+                is_coupon_cashflow = coupon_alias is not None
+                
+                # Solo operaciones de rentas/dividendos/amortización.
+                # Excepción validada: algunos cupones Gallo vienen como `VENTA`
+                # con código aliasado `1 + codigo subyacente`; deben rutearse como
+                # flujo de renta/dividendo del activo base, no como boleto.
+                if not is_coupon_cashflow and not any(op in operacion_lower for op in self.OPERACIONES_RENTAS):
+                    continue
+
                 fecha = gallo_ws.cell(row, 4).value
                 numero = gallo_ws.cell(row, 6).value
                 cantidad = gallo_ws.cell(row, 7).value
@@ -3082,6 +3135,12 @@ class GalloVisualMerger:
                 # Filtrar solo 2025
                 if not self._is_year_2025(fecha):
                     continue
+
+                if coupon_alias:
+                    cod_especie = coupon_alias['underlying_code']
+                    especie = coupon_alias['underlying_name']
+                    operacion = coupon_alias['cashflow_operacion']
+                    operacion_lower = operacion.lower()
                 
                 # Determinar moneda basándose en nombre de hoja
                 sheet_lower = sheet_name.lower()
@@ -3129,6 +3188,11 @@ class GalloVisualMerger:
                 fecha_dt, _ = self._parse_fecha(fecha)
                 
                 auditoria = f"Origen: Gallo-{sheet_name} | Operación: {operacion}"
+                if coupon_alias:
+                    auditoria += (
+                        f" | CUPON_ALIAS:{coupon_alias['coupon_code']}->"
+                        f"{coupon_alias['underlying_code']}"
+                    )
                 
                 all_rentas.append({
                     'tipo_instrumento_val': None,  # Usará fórmula
@@ -4694,13 +4758,13 @@ class GalloVisualMerger:
                 ws.cell(row, 10, f'=I{row}/{cotiz}')
 
 
-def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = None, 
+def merge_gallo_visual(gallo_path: str = None, visual_path: str = None, output_path: str = None, 
                        output_mode: str = "formulas", precio_tenencias_path: str = None) -> str:
     """
     Función principal para ejecutar el merge.
     
     Args:
-        gallo_path: Ruta al Excel de Gallo
+        gallo_path: Ruta al Excel de Gallo (opcional para casos Visual-only)
         visual_path: Ruta al Excel de Visual
         output_path: Ruta de salida (opcional, genera nombre automático)
         output_mode: "formulas" (default), "values", or "both"
@@ -4713,7 +4777,7 @@ def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = Non
     
     if output_path is None:
         # Generar nombre basado en el archivo de entrada
-        gallo_name = Path(gallo_path).stem.replace('_Gallo_Generado_OK', '')
+        gallo_name = Path(gallo_path).stem.replace('_Gallo_Generado_OK', '') if gallo_path else Path(visual_path).stem
         output_path = f"{gallo_name}_Merge_Consolidado.xlsx"
     
     if output_mode == "formulas" and wb_formulas:
