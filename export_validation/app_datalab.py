@@ -189,13 +189,6 @@ def convert_pdf_to_excel_streamlit(pdf_bytes: bytes, pdf_name: str, format_type:
     return excel_path, comitente_number, comitente_name, markdown_content
 
 
-def resolve_merge_client_info(results: dict) -> tuple[str, str]:
-    """Toma el comitente disponible priorizando Gallo y luego Visual."""
-    comitente_num = results.get('gallo_comitente_num') or results.get('visual_comitente_num') or ''
-    comitente_name = results.get('gallo_comitente_name') or results.get('visual_comitente_name') or ''
-    return comitente_num, comitente_name
-
-
 # File uploaders
 col1, col2, col3 = st.columns(3)
 
@@ -313,19 +306,17 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                     progress_bar.progress(100)
                     status_text.text("✅ Procesamiento completado!")
                     
-                    # ======== MERGE AUTOMÁTICO SI HAY VISUAL ========
-                    if 'visual' in results:
+                    # ======== MERGE AUTOMÁTICO SI HAY AMBOS ARCHIVOS ========
+                    if 'gallo' in results and 'visual' in results:
                         status_text.text("🔄 Generando Resumen Impositivo combinado...")
                         
                         # Create temp files for merge
+                        gallo_temp = os.path.join(temp_dir, "gallo_for_merge.xlsx")
                         visual_temp = os.path.join(temp_dir, "visual_for_merge.xlsx")
                         precio_tenencias_temp = os.path.join(temp_dir, "precio_tenencias_for_merge.xlsx")
                         
-                        gallo_temp = None
-                        if 'gallo' in results:
-                            gallo_temp = os.path.join(temp_dir, "gallo_for_merge.xlsx")
-                            with open(gallo_temp, "wb") as f:
-                                f.write(results['gallo'])
+                        with open(gallo_temp, "wb") as f:
+                            f.write(results['gallo'])
                         with open(visual_temp, "wb") as f:
                             f.write(results['visual'])
                         if 'precio_tenencias' in results:
@@ -374,20 +365,12 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                     }
                     
                     # Show success message based on what was processed
-                    if 'merged' in results and 'gallo' in results:
+                    if 'merged' in results:
                         st.markdown("""
                         <div class="success-box">
                             <h3>✅ Procesamiento Completo!</h3>
                             <p>Se generó el <strong>Resumen Impositivo combinado</strong> con datos de Gallo + Visual.</p>
                             <p>También puede descargar los Excel individuales de cada formato.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    elif 'merged' in results:
-                        st.markdown("""
-                        <div class="success-box">
-                            <h3>✅ Procesamiento Completo!</h3>
-                            <p>Se generó el <strong>Resumen Impositivo</strong> usando Visual como fuente principal.</p>
-                            <p>El caso no incluyó PDF de Gallo ni Precio Tenencias.</p>
                         </div>
                         """, unsafe_allow_html=True)
                     else:
@@ -471,7 +454,8 @@ if st.session_state.processed_files is not None:
         </div>
         """, unsafe_allow_html=True)
         
-        comitente_num, comitente_name = resolve_merge_client_info(st.session_state.processed_files)
+        comitente_num = st.session_state.processed_files.get('gallo_comitente_num', '')
+        comitente_name = st.session_state.processed_files.get('gallo_comitente_name', '')
         
         if comitente_num and comitente_name:
             clean_name = re.sub(r'[^\w\s]', '', comitente_name).strip().replace(' ', '_')[:30]
