@@ -549,17 +549,20 @@ class GalloVisualMerger:
                 overrides[cod_clean] = 'ARS'
         return overrides
     
-    def __init__(self, gallo_path: str, visual_path: str, aux_data_dir: str = None, precio_tenencias_path: str = None):
+    def __init__(self, gallo_path: str = None, visual_path: str = None, aux_data_dir: str = None, precio_tenencias_path: str = None):
         """
         Inicializa el merger con las rutas a los archivos.
         
         Args:
-            gallo_path: Ruta al Excel generado de Gallo
+            gallo_path: Ruta al Excel generado de Gallo (opcional para casos Visual-only)
             visual_path: Ruta al Excel generado de Visual
             aux_data_dir: Directorio con hojas auxiliares (default: pdf_converter/datalab/aux_data)
             precio_tenencias_path: Ruta al Excel generado desde el PDF de Precio Tenencias (opcional)
         """
-        self.gallo_path = Path(gallo_path)
+        if not visual_path:
+            raise ValueError("visual_path es obligatorio")
+
+        self.gallo_path = Path(gallo_path) if gallo_path else None
         self.visual_path = Path(visual_path)
         self.precio_tenencias_path = Path(precio_tenencias_path) if precio_tenencias_path else None
         
@@ -568,7 +571,7 @@ class GalloVisualMerger:
         self.aux_data_dir = Path(aux_data_dir)
         
         # Cargar workbooks
-        self.gallo_wb = load_workbook(gallo_path)
+        self.gallo_wb = load_workbook(gallo_path) if gallo_path else self._create_empty_gallo_workbook()
         self.visual_wb = load_workbook(visual_path)
         self.precio_tenencias_wb = load_workbook(precio_tenencias_path) if precio_tenencias_path else None
         
@@ -593,6 +596,12 @@ class GalloVisualMerger:
         
         # Construir caches
         self._build_caches()
+
+    def _create_empty_gallo_workbook(self) -> Workbook:
+        """Crea un workbook Gallo vacío para flujos Visual-only."""
+        wb = Workbook()
+        wb.active.title = 'EMPTY_GALLO'
+        return wb
     
     def _load_aux(self, filename: str) -> Workbook:
         """Carga un archivo auxiliar."""
@@ -4694,13 +4703,13 @@ class GalloVisualMerger:
                 ws.cell(row, 10, f'=I{row}/{cotiz}')
 
 
-def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = None, 
+def merge_gallo_visual(gallo_path: str = None, visual_path: str = None, output_path: str = None, 
                        output_mode: str = "formulas", precio_tenencias_path: str = None) -> str:
     """
     Función principal para ejecutar el merge.
     
     Args:
-        gallo_path: Ruta al Excel de Gallo
+        gallo_path: Ruta al Excel de Gallo (opcional para casos Visual-only)
         visual_path: Ruta al Excel de Visual
         output_path: Ruta de salida (opcional, genera nombre automático)
         output_mode: "formulas" (default), "values", or "both"
@@ -4713,7 +4722,7 @@ def merge_gallo_visual(gallo_path: str, visual_path: str, output_path: str = Non
     
     if output_path is None:
         # Generar nombre basado en el archivo de entrada
-        gallo_name = Path(gallo_path).stem.replace('_Gallo_Generado_OK', '')
+        gallo_name = Path(gallo_path).stem.replace('_Gallo_Generado_OK', '') if gallo_path else Path(visual_path).stem
         output_path = f"{gallo_name}_Merge_Consolidado.xlsx"
     
     if output_mode == "formulas" and wb_formulas:
