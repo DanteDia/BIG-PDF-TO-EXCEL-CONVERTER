@@ -4703,8 +4703,9 @@ class GalloVisualMerger:
                 ws.cell(row, 10, f'=I{row}/{cotiz}')
 
 
-def merge_gallo_visual(gallo_path: str = None, visual_path: str = None, output_path: str = None, 
-                       output_mode: str = "formulas", precio_tenencias_path: str = None) -> str:
+def merge_gallo_visual(gallo_path: str = None, visual_path: str = None, output_path: str = None,
+                       output_mode: str = "formulas", precio_tenencias_path: str = None,
+                       aux_data_dir: str = None) -> str:
     """
     Función principal para ejecutar el merge.
     
@@ -4713,11 +4714,17 @@ def merge_gallo_visual(gallo_path: str = None, visual_path: str = None, output_p
         visual_path: Ruta al Excel de Visual
         output_path: Ruta de salida (opcional, genera nombre automático)
         output_mode: "formulas" (default), "values", or "both"
+        aux_data_dir: Directorio con hojas auxiliares (opcional)
     
     Returns:
         Ruta del archivo generado (o tupla de rutas si output_mode="both")
     """
-    merger = GalloVisualMerger(gallo_path, visual_path, precio_tenencias_path=precio_tenencias_path)
+    merger = GalloVisualMerger(
+        gallo_path=gallo_path,
+        visual_path=visual_path,
+        aux_data_dir=aux_data_dir,
+        precio_tenencias_path=precio_tenencias_path,
+    )
     wb_formulas, wb_values = merger.merge(output_mode=output_mode)
     
     if output_path is None:
