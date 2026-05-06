@@ -446,6 +446,26 @@ def _lookup_visual_quantity_anchor(
     return None
 
 
+def _has_exact_visual_quantity_anchor(
+    anchors: Dict[Tuple[int, str, str, str], int],
+    code,
+    concertacion,
+    moneda,
+    operacion,
+) -> bool:
+    code_key = _normalize_visual_code(code)
+    if code_key is None:
+        return False
+
+    exact_key = (
+        code_key,
+        _normalize_visual_date_key(concertacion),
+        _normalize_visual_currency_key(moneda),
+        _normalize_visual_operation_key(operacion),
+    )
+    return exact_key in anchors
+
+
 def _is_strong_visual_quantity_anomaly(raw_qty) -> bool:
     raw_text = str(raw_qty or '').strip()
     if not raw_text:
@@ -542,7 +562,40 @@ def _build_code_mixed_magnitude(ws: Worksheet) -> Dict[int, bool]:
     }
 
 
-def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_anchor_evidence: int = 0, operacion: str = '', code_mixed_magnitude: bool = False) -> bool:
+def _anchor_matches_bruto_scale(current_bruto, precio_value, parsed_qty, anchor_qty: int) -> bool:
+    """Accept exact 1000x anchors when bruto clearly validates the larger quantity."""
+    if anchor_qty in (None, 0):
+        return False
+
+    try:
+        bruto_abs = abs(float(current_bruto or 0))
+        precio_abs = abs(float(precio_value or 0))
+        parsed_abs = abs(float(parsed_qty or 0))
+        anchor_abs = abs(float(anchor_qty))
+    except Exception:
+        return False
+
+    if bruto_abs <= 0 or precio_abs <= 0 or parsed_abs <= 0 or anchor_abs <= 0:
+        return False
+
+    ratio = anchor_abs / parsed_abs
+    if not 900 <= ratio <= 1100:
+        return False
+
+    expected_anchor = anchor_abs * precio_abs
+    expected_parsed = parsed_abs * precio_abs
+    if expected_anchor <= 0:
+        return False
+
+    err_anchor = abs(expected_anchor - bruto_abs) / expected_anchor
+    err_parsed = abs(expected_parsed - bruto_abs) / bruto_abs if bruto_abs else float('inf')
+    return err_anchor <= 0.02 and err_parsed >= 0.90
+
+
+def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_anchor_evidence: int = 0,
+                                operacion: str = '', code_mixed_magnitude: bool = False,
+                                current_bruto=None, precio_value=None,
+                                exact_anchor_match: bool = False) -> bool:
     if anchor_qty in (None, 0):
         return False
 
@@ -595,6 +648,18 @@ def _should_apply_visual_anchor(raw_qty, parsed_qty, anchor_qty: int, code_ancho
         ratio_1000 = anchor_abs / parsed_abs
         if 900 <= ratio_1000 <= 1100:
             return True
+
+    operacion_key = _normalize_visual_operation_key(operacion)
+
+    if parsed_abs > 0 and exact_anchor_match and 'contado continuo' not in operacion_key:
+        ratio_1000 = anchor_abs / parsed_abs
+        if 900 <= ratio_1000 <= 1100:
+            return True
+
+    # Some clean truncations lose the trailing thousands groups without leaving
+    # punctuation clues in Boletos. Use bruto as a second witness before rescuing.
+    if _anchor_matches_bruto_scale(current_bruto, precio_value, parsed_qty, anchor_qty):
+        return True
 
     digits = re.sub(r'\D', '', raw_text)
     anchor_digits = str(abs(int(anchor_qty)))
@@ -1508,6 +1573,13 @@ def process_visual_sheet(
                     ws.cell(row, moneda_col).value,
                     ws.cell(row, 6).value,
                 )
+                exact_anchor_match = _has_exact_visual_quantity_anchor(
+                    quantity_anchors,
+                    ws.cell(row, codigo_col).value,
+                    ws.cell(row, 2).value,
+                    ws.cell(row, moneda_col).value,
+                    ws.cell(row, 6).value,
+                )
                 if _should_apply_visual_anchor(
                     raw_qty,
                     qty_value,
@@ -1515,6 +1587,9 @@ def process_visual_sheet(
                     code_anchor_evidence=(code_anchor_evidence or {}).get(_normalize_visual_code(ws.cell(row, codigo_col).value) or -1, 0),
                     operacion=ws.cell(row, 6).value,
                     code_mixed_magnitude=(code_mixed_magnitude or {}).get(_normalize_visual_code(ws.cell(row, codigo_col).value) or -1, False),
+                    current_bruto=bruto_value,
+                    precio_value=precio_value,
+                    exact_anchor_match=exact_anchor_match,
                 ):
                     ws.cell(row, cantidad_col).value = anchor_qty
                     qty_value = anchor_qty

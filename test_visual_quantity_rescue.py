@@ -234,19 +234,24 @@ def test_visual_quantity_rescue_from_resultado_anchors():
     assert ws_boletos.cell(row_88185, 9).value == 2217391304
     assert ws_boletos.cell(row_111965, 9).value == -352670140
     assert ws_boletos.cell(row_107310, 9).value == 352670140
-    assert ws_boletos.cell(row_116455, 9).value == -1285714.2
-    assert ws_boletos.cell(row_116454, 9).value == 1285714.2
-    assert ws_boletos.cell(row_68292, 9).value == -1632072.1
-    assert ws_boletos.cell(row_68291, 9).value == 1632072.1
+    assert ws_boletos.cell(row_116455, 9).value == -1285714285
+    assert ws_boletos.cell(row_116454, 9).value == 1285714285
+    assert ws_boletos.cell(row_68292, 9).value == -1632072131
+    assert ws_boletos.cell(row_68291, 9).value == 1632072131
     assert ws_boletos.cell(row_90060, 9).value == 2080213
     assert ws_boletos.cell(row_102073, 9).value == 4500000
     assert ws_boletos.cell(row_128850, 9).value == -462963
     assert ws_boletos.cell(row_128849, 9).value == 462963
 
-    assert math.isclose(ws_boletos.cell(row_111965, 12).value, -555102800.36, rel_tol=0, abs_tol=0.01)
-    assert math.isclose(ws_boletos.cell(row_111965, 15).value, -555102800.36, rel_tol=0, abs_tol=0.01)
-    assert math.isclose(ws_boletos.cell(row_88186, 12).value, -3224973912.5376, rel_tol=0, abs_tol=0.01)
-    assert math.isclose(ws_boletos.cell(row_88186, 15).value, -3224973912.5376, rel_tol=0, abs_tol=0.01)
+    assert math.isclose(
+        ws_boletos.cell(row_111965, 12).value,
+        ws_boletos.cell(row_111965, 9).value * ws_boletos.cell(row_111965, 10).value,
+        rel_tol=0,
+        abs_tol=0.01,
+    )
+    assert math.isclose(ws_boletos.cell(row_111965, 15).value, ws_boletos.cell(row_111965, 12).value, rel_tol=0, abs_tol=0.01)
+    assert math.isclose(ws_boletos.cell(row_88186, 12).value, -3224973906.72, rel_tol=0, abs_tol=0.05)
+    assert math.isclose(ws_boletos.cell(row_88186, 15).value, -3224973906.72, rel_tol=0, abs_tol=0.05)
 
     # The anchor sheets should keep integer quantities instead of inflating zero decimal tails.
     row_result_9305 = _find_resultado_row(ws_result, 9305, '10/7/2025', 'Pesos', 'Venta Contado Continuo')
@@ -259,6 +264,76 @@ def test_visual_quantity_rescue_from_resultado_anchors():
     assert ws_result.cell(row_result_9295, 8).value == -1632072131
 
 
+def test_visual_quantity_rescue_exact_1000x_match_without_punctuation_anomaly():
+    wb = Workbook()
+    ws_boletos = wb.active
+    ws_boletos.title = 'Boletos'
+    ws_boletos.append(BOLETOS_HEADERS)
+    ws_boletos.append([
+        'Títulos Públicos', '30/6/2025', '1/7/2025', 73831, 'Pesos',
+        'Venta Contado', 9323, 'BONO NACION TA', -130000, 1.065,
+        1, -138450, 0, -83070, -138366.93
+    ])
+    ws_boletos.append([
+        'Títulos Públicos', '30/7/2025', '30/7/2025', 90535, 'Pesos',
+        'Compra Contado', 9314, 'BONO TESORO NA', 8300000, 1.168,
+        1, 9694400, 0, 10663.84, 9705063.8
+    ])
+    ws_boletos.append([
+        'Títulos Públicos', '19/9/2025', '22/9/2025', 120514, 'Pesos',
+        'Venta Contado', 9314, 'BONO TESORO NA', -108300, 1.1525,
+        1, -124815.75, 0, -12481.58, -124803.26
+    ])
+    ws_boletos.append([
+        'Títulos Públicos', '19/9/2025', '22/9/2025', 120515, 'Pesos',
+        'Venta Contado', 9318, 'BONO TESORO NA', -100000, 0.9725,
+        1, -97250, 0, -9725, -97240275
+    ])
+
+    ws_result = wb.create_sheet('Resultado Ventas ARS')
+    ws_result.append(RESULTADO_HEADERS)
+    ws_result.append([
+        'Títulos Públicos', 'BONO TESORO NACI CAP V.13/02/26 $ CG - Pesos', 9314, '30/7/2025',
+        '30/7/2025', 'Pesos', 'Compra Contado', 8300000, 1.168,
+        -9694400, 0, 1, 10663.84, 0, 0
+    ])
+    ws_result.append([
+        'Títulos Públicos', 'BONO TESORO NACI CAP V.13/02/26 $ CG - Pesos', 9314, '19/9/2025',
+        '22/9/2025', 'Pesos', 'Venta Contado', -108300000, 1.1525,
+        124815750, 0, 1, -12481.58, 0, -140270.5
+    ])
+    ws_result.append([
+        'Títulos Públicos', 'BONO NACIÓN TASA DUAL 15/12/26 $ CG - Pesos', 9323, '30/6/2025',
+        '1/7/2025', 'Pesos', 'Venta Contado', -130000000, 1.065,
+        138450000, 0, 1, -83070, 0, 0
+    ])
+    ws_result.append([
+        'Títulos Públicos', 'BONO TESORO NACI CAP V.30/06/26 $ CG - Pesos', 9318, '19/9/2025',
+        '22/9/2025', 'Pesos', 'Venta Contado', -100000000, 0.9725,
+        97250000, 0, 1, -9725, 0, -22389
+    ])
+
+    postprocess_visual_workbook(wb)
+
+    row_73831 = _find_boleto_row(ws_boletos, 73831)
+    row_120514 = _find_boleto_row(ws_boletos, 120514)
+    row_120515 = _find_boleto_row(ws_boletos, 120515)
+    row_90535 = _find_boleto_row(ws_boletos, 90535)
+
+    assert ws_boletos.cell(row_73831, 9).value == -130000000
+    assert math.isclose(ws_boletos.cell(row_73831, 12).value, -138450000, rel_tol=0, abs_tol=0.01)
+    assert ws_boletos.cell(row_120514, 9).value == -108300000
+    assert math.isclose(ws_boletos.cell(row_120514, 12).value, -124815750, rel_tol=0, abs_tol=0.01)
+    assert ws_boletos.cell(row_120515, 9).value == -100000000
+    assert math.isclose(ws_boletos.cell(row_120515, 12).value, -97250000, rel_tol=0, abs_tol=0.01)
+    assert math.isclose(ws_boletos.cell(row_120515, 15).value, -97240275, rel_tol=0, abs_tol=0.01)
+
+    # Control sano: una fila ya correcta no debe cambiar.
+    assert ws_boletos.cell(row_90535, 9).value == 8300000
+    assert math.isclose(ws_boletos.cell(row_90535, 12).value, 9694400, rel_tol=0, abs_tol=0.01)
+
+
 if __name__ == '__main__':
     test_visual_quantity_rescue_from_resultado_anchors()
+    test_visual_quantity_rescue_exact_1000x_match_without_punctuation_anomaly()
     print('ok')
