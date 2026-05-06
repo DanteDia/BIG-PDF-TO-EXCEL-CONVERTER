@@ -96,6 +96,36 @@ class GalloVisualMerger:
         text = " ".join(str(v or "") for v in values).lower()
         return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
 
+    def _get_gallo_metadata_currency_hint(self, cod_especie=None, especie: str = "") -> Optional[str]:
+        """Infers the natural currency from species metadata when Gallo's sheet is ambiguous."""
+        candidates = []
+
+        codigo = self._clean_codigo(cod_especie)
+        if codigo:
+            visual_data = self._especies_visual_cache.get(codigo, {})
+            gallo_data = self._especies_gallo_cache.get(codigo, {})
+            candidates.extend([
+                visual_data.get('nombre_con_moneda'),
+                visual_data.get('moneda_emision'),
+                gallo_data.get('nombre'),
+                gallo_data.get('moneda_emision'),
+            ])
+
+        candidates.append(especie)
+
+        for raw_value in candidates:
+            text = str(raw_value or '').strip().lower()
+            if not text:
+                continue
+            if 'peso' in text or text == 'ars':
+                return 'Pesos'
+            if 'cable' in text or 'usd c' in text or 'exterior' in text:
+                return 'Dolar Cable'
+            if 'dolar mep' in text or 'dolares' in text or 'dólares' in text or 'usd' in text or 'u$s' in text:
+                return 'Dolar MEP'
+
+        return None
+
     def _resultado_bucket_hint_from_origen(self, origen: str) -> Optional[str]:
         """Da prioridad al bucket implícito del origen cuando la hoja fuente lo deja explícito."""
         origen_text = str(origen or '').strip().lower()
@@ -846,13 +876,27 @@ class GalloVisualMerger:
         resto = parts[1] if len(parts) > 1 else ""
         return ticker, resto
     
-    def _get_moneda(self, resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, hoja_origen: str, operacion: str = "") -> str:
+    def _get_moneda(self, resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, hoja_origen: str,
+                    operacion: str = "", cod_especie=None, especie: str = "") -> str:
         """Determina la moneda basándose en los valores, la hoja de origen y la operación."""
         operacion_lower = str(operacion).lower() if operacion else ""
-        
+        hoja_lower = str(hoja_origen or '').lower()
+        explicit_sheet_bucket = any(token in hoja_lower for token in ['pesos', 'dolar', 'exterior'])
+        metadata_hint = self._get_gallo_metadata_currency_hint(cod_especie, especie)
+
+        # En hojas ambiguas de Gallo, la metadata de especie y los importes reales
+        # pesan más que el sufijo textual USD/CABLE de la operación.
+        if not explicit_sheet_bucket and metadata_hint == 'Pesos':
+            if resultado_pesos and float(resultado_pesos) != 0:
+                return 'Pesos'
+            if gastos_pesos and float(gastos_pesos) != 0:
+                return 'Pesos'
+            if not resultado_usd and not gastos_usd:
+                return 'Pesos'
+
         # Si la operación menciona USD/EXT/CABLE
         if 'usd' in operacion_lower or 'ext' in operacion_lower or 'cable' in operacion_lower:
-            if 'exterior' in hoja_origen.lower() or 'cable' in operacion_lower:
+            if 'exterior' in hoja_lower or 'cable' in operacion_lower:
                 return "Dolar Cable"
             else:
                 return "Dolar MEP"
@@ -865,13 +909,16 @@ class GalloVisualMerger:
         
         # Si hay valores en USD, determinar tipo
         if resultado_usd or gastos_usd:
-            if 'exterior' in hoja_origen.lower():
+            if 'exterior' in hoja_lower:
                 return "Dolar Cable"
             else:
                 return "Dolar MEP"
+
+        if not explicit_sheet_bucket and metadata_hint:
+            return metadata_hint
         
         # Por defecto usar la hoja de origen
-        if 'dolar' in hoja_origen.lower():
+        if 'dolar' in hoja_lower:
             return "Dolar MEP"
         
         return "Pesos"  # Default
@@ -2484,7 +2531,16 @@ class GalloVisualMerger:
                     moneda = "Dolar MEP"
                 else:
                     # Fallback: usar la lógica original
-                    moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
+                    moneda = self._get_moneda(
+                        resultado_pesos,
+                        resultado_usd,
+                        gastos_pesos,
+                        gastos_usd,
+                        sheet_name,
+                        operacion,
+                        cod_especie=cod_especie,
+                        especie=especie,
+                    )
                 
                 # Gastos según moneda
                 gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
@@ -3101,7 +3157,16 @@ class GalloVisualMerger:
                 elif 'dolar' in sheet_lower:
                     moneda = "Dolar MEP"
                 else:
-                    moneda = self._get_moneda(resultado_pesos, resultado_usd, gastos_pesos, gastos_usd, sheet_name, operacion)
+                    moneda = self._get_moneda(
+                        resultado_pesos,
+                        resultado_usd,
+                        gastos_pesos,
+                        gastos_usd,
+                        sheet_name,
+                        operacion,
+                        cod_especie=cod_especie,
+                        especie=especie,
+                    )
                 
                 # Gastos según moneda - siempre positivos
                 gastos = gastos_pesos if moneda == "Pesos" else gastos_usd
