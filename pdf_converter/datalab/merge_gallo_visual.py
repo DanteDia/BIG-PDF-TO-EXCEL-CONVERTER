@@ -244,6 +244,8 @@ class GalloVisualMerger:
     def _normalize_trade_price(self, price, tipo_instrumento: str, origen: str = "", moneda: str = "", moneda_tipo: str = "") -> float:
         """Normaliza precios de trade respetando excepciones validadas por origen/capa."""
         price_num = self._to_float(price)
+        if 'gallo-boletos-normalized' in str(origen or '').lower():
+            return price_num
         if moneda_tipo == "USD" and self._is_visual_origin(origen) and self._es_tipo_precio_cada_100(tipo_instrumento):
             if 0 < abs(price_num) < 0.01:
                 return price_num
@@ -1119,6 +1121,122 @@ class GalloVisualMerger:
                 return data.get('codigo')
         
         return None
+
+    def _build_trade_dedupe_key(self, fecha, cod_instrum, cantidad, precio, operacion) -> Tuple[str, str, float, float, str]:
+        fecha_dt, _ = self._parse_fecha(fecha)
+        fecha_key = fecha_dt.date().isoformat() if fecha_dt else str(fecha or '').strip()
+
+        cantidad_num = self._to_float(cantidad)
+        if abs(cantidad_num - round(cantidad_num)) < 1e-6:
+            cantidad_num = int(round(cantidad_num))
+
+        precio_num = round(self._to_float(precio), 8)
+        operacion_text = str(operacion or '').strip().lower()
+        if 'venta' in operacion_text:
+            operacion_key = 'venta'
+        elif 'compra' in operacion_text or 'cpra' in operacion_text:
+            operacion_key = 'compra'
+        elif 'canje' in operacion_text:
+            operacion_key = 'canje'
+        elif 'licit' in operacion_text:
+            operacion_key = 'licitacion'
+        elif 'trf' in operacion_text:
+            operacion_key = 'trf'
+        else:
+            operacion_key = operacion_text
+
+        return (
+            fecha_key,
+            self._clean_codigo(cod_instrum),
+            cantidad_num,
+            precio_num,
+            operacion_key,
+        )
+
+    def _append_precio_tenencias_initial_positions(self, ws, row_out: int, existing_codes: Optional[set] = None) -> int:
+        if not self.precio_tenencias_wb:
+            return row_out
+
+        src_ws = self.precio_tenencias_wb['PrecioTenenciasIniciales'] if 'PrecioTenenciasIniciales' in self.precio_tenencias_wb.sheetnames else self.precio_tenencias_wb.active
+        existing_codes = existing_codes or set()
+        headers = [str(src_ws.cell(1, c).value or '').strip().lower() for c in range(1, src_ws.max_column + 1)]
+
+        def find_exact(*names: str) -> Optional[int]:
+            normalized = {str(name).strip().lower() for name in names if name}
+            for idx, header in enumerate(headers, start=1):
+                if header in normalized:
+                    return idx
+            return None
+
+        col_cod = find_exact('cod.especie', 'cod especie')
+        col_ticker = find_exact('ticker')
+        col_especie = find_exact('especie')
+        col_cantidad = find_exact('cantidad tenencia')
+        col_importe = find_exact('importe invertido')
+        col_precio = find_exact('precio tenencia inicial', 'precio ajustado')
+
+        if not col_cod or not col_cantidad or not col_precio:
+            return row_out
+
+        for row in range(2, src_ws.max_row + 1):
+            codigo_raw = src_ws.cell(row, col_cod).value
+            codigo_clean = self._clean_codigo(codigo_raw)
+            if not codigo_clean or codigo_clean in existing_codes:
+                continue
+
+            cantidad = self._to_float(src_ws.cell(row, col_cantidad).value)
+            precio_tenencia = self._to_float(src_ws.cell(row, col_precio).value)
+            if cantidad <= 0 or precio_tenencia <= 0:
+                continue
+
+            ticker = src_ws.cell(row, col_ticker).value if col_ticker else ''
+            especie = src_ws.cell(row, col_especie).value if col_especie else ''
+            importe_invertido = abs(self._to_float(src_ws.cell(row, col_importe).value)) if col_importe else 0
+            visual_data = self._especies_visual_cache.get(codigo_clean, {})
+            ticker = ticker or visual_data.get('ticker') or ''
+            especie = especie or visual_data.get('nombre') or ''
+            tipo_especie = visual_data.get('tipo_especie') or ''
+            moneda_hint = visual_data.get('nombre_con_moneda') or visual_data.get('moneda_emision') or ''
+            is_usd = self._is_dollar_related(moneda_hint)
+            precio_inicial = self._get_precio_inicial(ticker)
+            tipo_instrumento_val = self._vlookup_especies_visual(codigo_clean, 16) if codigo_clean else ''
+
+            try:
+                codigo_val = int(codigo_clean)
+            except (TypeError, ValueError):
+                codigo_val = codigo_clean
+
+            ws.cell(row_out, 1, tipo_especie)
+            ws.cell(row_out, 2, ticker)
+            ws.cell(row_out, 3, especie)
+            ws.cell(row_out, 4, codigo_val)
+            ws.cell(row_out, 5, 'PrecioTenenciasIniciales')
+            ws.cell(row_out, 6, '')
+            ws.cell(row_out, 7, '')
+            ws.cell(row_out, 8, '')
+            ws.cell(row_out, 9, cantidad)
+            ws.cell(row_out, 10, 0 if is_usd else precio_tenencia)
+            ws.cell(row_out, 11, precio_tenencia if is_usd else 0)
+            ws.cell(row_out, 12, precio_inicial)
+            ws.cell(row_out, 13, '')
+            ws.cell(row_out, 14, 'PrecioTenenciasIniciales')
+            ws.cell(row_out, 15, 'Synthetic from PrecioTenenciasIniciales')
+            ws.cell(row_out, 16, precio_tenencia)
+            ws.cell(row_out, 17, 0 if is_usd else importe_invertido)
+            ws.cell(row_out, 18, 0)
+            ws.cell(row_out, 19, importe_invertido if is_usd else 0)
+            ws.cell(row_out, 20, 0)
+            ws.cell(row_out, 21, tipo_instrumento_val)
+            ws.cell(row_out, 22, self._normalize_initial_cost_price(
+                precio_tenencia,
+                tipo_instrumento_val,
+                'PrecioTenenciasIniciales',
+            ))
+
+            existing_codes.add(codigo_clean)
+            row_out += 1
+
+        return row_out
     
     def _is_moneda(self, ticker: str) -> bool:
         """Verifica si el ticker corresponde a una moneda (PESOS, DOLARES, DOLAR CABLE)."""
@@ -2123,13 +2241,12 @@ class GalloVisualMerger:
             ws.cell(1, col, header)
             ws.cell(1, col).font = Font(bold=True)
         
-        # Copiar datos de Gallo
-        try:
-            gallo_ws = self.gallo_wb['Posicion Inicial']
-        except KeyError:
-            return
-        
         row_out = 2
+        gallo_ws = self.gallo_wb['Posicion Inicial'] if 'Posicion Inicial' in self.gallo_wb.sheetnames else None
+        if not gallo_ws:
+            self._append_precio_tenencias_initial_positions(ws, row_out)
+            return
+
         for row in range(2, gallo_ws.max_row + 1):
             tipo_especie = gallo_ws.cell(row, 1).value
             especie_full = gallo_ws.cell(row, 2).value
@@ -2447,6 +2564,27 @@ class GalloVisualMerger:
         # Recolectar todas las transacciones para ordenar
         all_transactions = []
         seen_gallo_transactions = set()
+        visual_dedupe_keys = set()
+
+        try:
+            visual_boletos_for_dedupe = self.visual_wb['Boletos']
+            for _row in range(2, visual_boletos_for_dedupe.max_row + 1):
+                _operacion = visual_boletos_for_dedupe.cell(_row, 6).value
+                if not _operacion:
+                    continue
+                _fecha = visual_boletos_for_dedupe.cell(_row, 2).value
+                _, _year = self._parse_fecha(_fecha)
+                if _year != 2025:
+                    continue
+                visual_dedupe_keys.add(self._build_trade_dedupe_key(
+                    _fecha,
+                    visual_boletos_for_dedupe.cell(_row, 7).value,
+                    visual_boletos_for_dedupe.cell(_row, 9).value,
+                    visual_boletos_for_dedupe.cell(_row, 10).value,
+                    _operacion,
+                ))
+        except KeyError:
+            pass
         
         # Procesar hojas de Gallo
         for sheet_name in self.gallo_wb.sheetnames:
@@ -2461,6 +2599,79 @@ class GalloVisualMerger:
             try:
                 gallo_ws = self.gallo_wb[sheet_name]
             except:
+                continue
+
+            gallo_headers = [str(gallo_ws.cell(1, c).value or '').strip().lower() for c in range(1, gallo_ws.max_column + 1)]
+            is_normalized_gallo_boletos = (
+                sheet_name.lower() == 'boletos'
+                and any(header in gallo_headers for header in ['tipo operación', 'tipo operacion', 'operación', 'operacion'])
+                and any(header in gallo_headers for header in ['cod.instrum', 'cód.', 'cod.', 'cód', 'cod'])
+            )
+            if is_normalized_gallo_boletos:
+                def find_gallo_col(options, default=None):
+                    for option in options:
+                        if option in gallo_headers:
+                            return gallo_headers.index(option) + 1
+                    return default
+
+                col_fecha = find_gallo_col(['concertación', 'concertacion', 'fecha'], 2)
+                col_liq = find_gallo_col(['liquidación', 'liquidacion', 'liquid.', 'liq.'], 3)
+                col_boleto = find_gallo_col(['nro. boleto', 'boleto'], 4)
+                col_moneda = find_gallo_col(['moneda', 'mon.'], 5)
+                col_operacion = find_gallo_col(['tipo operación', 'tipo operacion', 'operación', 'operacion'], 6)
+                col_codigo = find_gallo_col(['cod.instrum', 'cód.', 'cod.', 'cód', 'cod'], 7)
+                col_instrumento = find_gallo_col(['instrumento crudo', 'instrumento'], 8)
+                col_cantidad = find_gallo_col(['cantidad'], 9)
+                col_precio = find_gallo_col(['precio', 'precio nom.', 'precio nominal'], 10)
+                col_tc = find_gallo_col(['tipo cambio', 'tipo de cambio', 't.c.'], 11)
+                col_interes = find_gallo_col(['interés', 'interes'], 13)
+                col_gastos = find_gallo_col(['gastos'], 14)
+
+                for row in range(2, gallo_ws.max_row + 1):
+                    operacion = gallo_ws.cell(row, col_operacion).value
+                    if not operacion:
+                        continue
+
+                    fecha = gallo_ws.cell(row, col_fecha).value
+                    fecha_dt, year = self._parse_fecha(fecha)
+                    if year != 2025:
+                        continue
+
+                    cod_especie = gallo_ws.cell(row, col_codigo).value
+                    cantidad = gallo_ws.cell(row, col_cantidad).value
+                    precio = gallo_ws.cell(row, col_precio).value
+                    trade_key = self._build_trade_dedupe_key(fecha, cod_especie, cantidad, precio, operacion)
+                    if trade_key in visual_dedupe_keys or ('normalized', trade_key) in seen_gallo_transactions:
+                        continue
+                    seen_gallo_transactions.add(('normalized', trade_key))
+
+                    cod_clean = self._clean_codigo(cod_especie)
+                    try:
+                        cod_num = int(cod_clean) if cod_clean else None
+                    except:
+                        cod_num = cod_clean
+
+                    auditoria = f"Origen: Gallo-Boletos-normalized | Fecha: {fecha} | Cod: {cod_especie} | Op: {operacion}"
+                    all_transactions.append({
+                        'cod_instrum': cod_num,
+                        'fecha': fecha_dt if fecha_dt else fecha,
+                        'fecha_raw': fecha,
+                        'liquidacion': gallo_ws.cell(row, col_liq).value,
+                        'numero': gallo_ws.cell(row, col_boleto).value,
+                        'moneda': gallo_ws.cell(row, col_moneda).value,
+                        'operacion': operacion,
+                        'especie': gallo_ws.cell(row, col_instrumento).value,
+                        'cantidad': cantidad,
+                        'precio': precio,
+                        'tipo_cambio_fuente': gallo_ws.cell(row, col_tc).value,
+                        'interes': gallo_ws.cell(row, col_interes).value or 0,
+                        'gastos': gallo_ws.cell(row, col_gastos).value or 0,
+                        'bruto_fuente': None,
+                        'neto_fuente': None,
+                        'origen': 'gallo-Boletos-normalized',
+                        'auditoria': auditoria,
+                        'tipo_instrumento_val': gallo_ws.cell(row, 1).value,
+                    })
                 continue
             
             # Pre-scan: in "Pesos" sheets, detect instrument codes that have
@@ -2767,7 +2978,10 @@ class GalloVisualMerger:
             
             # Precio Nominal: dividir por 100 si es ON, Títulos Públicos o Letras del Tesoro
             # Busca en el Tipo de Instrumento (col A) si contiene Obligacion, Titulo/Título o Letra
-            precio_nominal = f'=SI(O(ESNUMERO(HALLAR("Obligacion";A{row_out}));ESNUMERO(HALLAR("Titulo";A{row_out}));ESNUMERO(HALLAR("Título";A{row_out}));ESNUMERO(HALLAR("Letra";A{row_out})));K{row_out}/100;K{row_out})'
+            if 'gallo-boletos-normalized' in str(trans.get('origen') or '').lower():
+                precio_nominal = self._to_float(trans.get('precio'))
+            else:
+                precio_nominal = f'=SI(O(ESNUMERO(HALLAR("Obligacion";A{row_out}));ESNUMERO(HALLAR("Titulo";A{row_out}));ESNUMERO(HALLAR("Título";A{row_out}));ESNUMERO(HALLAR("Letra";A{row_out})));K{row_out}/100;K{row_out})'
             
             # Bruto y Neto usan Precio Nominal (col T) en lugar de Precio (col K)
             bruto = f'=J{row_out}*T{row_out}'
@@ -3009,7 +3223,7 @@ class GalloVisualMerger:
                 aranceles_raw = visual_ws.cell(row, col_ara).value
                 derechos_raw = visual_ws.cell(row, col_der).value
                 
-                if not operacion:
+                if not fecha or not operacion:
                     continue
                 
                 interes_bruto_raw = float(interes_bruto_raw) if isinstance(interes_bruto_raw, (int, float)) else 0
@@ -3032,7 +3246,8 @@ class GalloVisualMerger:
                 
                 # Determinar moneda (asumimos Pesos por default, o buscar en columna si existe)
                 moneda = "Pesos"
-                if tipo_cambio and float(tipo_cambio) > 1:
+                tipo_cambio_num = self._to_float(tipo_cambio)
+                if tipo_cambio_num > 1:
                     moneda = "Dolar MEP"
                 
                 fecha_dt, _ = self._parse_fecha(fecha)
@@ -3048,7 +3263,7 @@ class GalloVisualMerger:
                     'boleto': boleto,
                     'contado': contado,
                     'futuro': futuro,
-                    'tipo_cambio': tipo_cambio or 1,
+                    'tipo_cambio': tipo_cambio_num or 1,
                     'tasa': tasa,
                     'interes_bruto': interes_bruto,
                     'interes_devengado': interes_devengado,

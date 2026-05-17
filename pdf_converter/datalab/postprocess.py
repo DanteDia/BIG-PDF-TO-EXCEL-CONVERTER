@@ -1655,13 +1655,20 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
                 return idx
         return None
 
-    especie_col = find_col('especie')
-    cantidad_col = find_col('cantidad')
-    importe_col = find_col('importe')
-    resultado_col = find_col('resultado')
-    cod_col = find_col('cod')
-    ticker_col = find_col('ticker')
-    precio_col = find_col('precio tenencia')
+    def find_exact_col(*names: str) -> Optional[int]:
+        normalized = {str(name).strip().lower() for name in names if name}
+        for idx, h in enumerate(headers_lower, start=1):
+            if h in normalized:
+                return idx
+        return None
+
+    especie_col = find_exact_col('especie') or find_col('especie')
+    cantidad_col = find_exact_col('cantidad tenencia') or find_col('cantidad')
+    importe_col = find_exact_col('importe invertido') or find_col('importe')
+    resultado_col = find_exact_col('resultado') or find_col('resultado')
+    cod_col = find_exact_col('cod.especie', 'cod especie') or find_col('cod')
+    ticker_col = find_exact_col('ticker') or find_col('ticker')
+    precio_col = find_exact_col('precio tenencia inicial') or find_col('precio tenencia')
 
     if not especie_col or not cantidad_col or not importe_col:
         return
@@ -1713,6 +1720,50 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
             except Exception:
                 return 0.0
         return to_float(raw)
+
+    def _is_integer_like(value: float) -> bool:
+        return abs(value - round(value)) < 1e-6
+
+    def _extract_embedded_cantidad(nombre: str) -> Tuple[str, float]:
+        text = str(nombre or '').strip()
+        match = re.match(r'^(?P<base>.*?)/\s*(?P<cantidad>[\d\.,()\-]+)$', text)
+        if not match:
+            return text, 0.0
+
+        cantidad_raw = match.group('cantidad')
+        digits = re.sub(r'\D', '', cantidad_raw)
+        if len(digits) < 5:
+            return text, 0.0
+
+        cantidad_num = parse_cantidad_tenencia(cantidad_raw)
+        if cantidad_num <= 0 or not _is_integer_like(cantidad_num):
+            return text, 0.0
+
+        return match.group('base').rstrip(), float(int(round(cantidad_num)))
+
+    def _maybe_rescue_embedded_cantidad(nombre: str, cantidad_num: float, importe_num: float, resultado_num: float) -> Tuple[str, float, float]:
+        clean_nombre, embedded_cantidad = _extract_embedded_cantidad(nombre)
+        if not embedded_cantidad:
+            return nombre, cantidad_num, importe_num
+
+        shifted_quantity = (
+            cantidad_num > 0
+            and not _is_integer_like(cantidad_num)
+            and (
+                importe_num <= 0
+                or abs(cantidad_num) > abs(importe_num)
+                or (abs(importe_num) > 0 and abs(abs(importe_num) - abs(resultado_num)) <= max(abs(resultado_num), 1.0) * 0.01)
+            )
+        )
+        if not shifted_quantity:
+            return nombre, cantidad_num, importe_num
+
+        rescued_importe = abs(cantidad_num)
+        rescued_price = rescued_importe / embedded_cantidad if embedded_cantidad else 0
+        if rescued_price <= 0:
+            return nombre, cantidad_num, importe_num
+
+        return clean_nombre, embedded_cantidad, rescued_importe
 
     def _clean_codigo(val: str) -> str:
         if val is None:
@@ -1806,6 +1857,12 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
             cantidad_num = parse_cantidad_tenencia(cantidad_val)
             importe_num = to_float(importe_val)
             resultado_num = to_float(resultado_val)
+            nombre, cantidad_num, importe_num = _maybe_rescue_embedded_cantidad(
+                nombre,
+                cantidad_num,
+                importe_num,
+                resultado_num,
+            )
 
             # Fix invalid rows: cantidad > 0 but importe <= 0
             if cantidad_num > 0 and importe_num <= 0:
@@ -1834,6 +1891,9 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
                 if ratio and cantidad_num:
                     precio_tenencia = (importe_num / cantidad_num) / ratio
 
+            ws.cell(row, especie_col, value=nombre)
+            ws.cell(row, cantidad_col, value=cantidad_num)
+            ws.cell(row, importe_col, value=importe_num)
             ws.cell(row, precio_col, value=precio_tenencia)
 
         return
@@ -1853,6 +1913,12 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
         cantidad_num = parse_cantidad_tenencia(cantidad_val)
         importe_num = to_float(importe_val)
         resultado_num = to_float(resultado_val)
+        nombre, cantidad_num, importe_num = _maybe_rescue_embedded_cantidad(
+            nombre,
+            cantidad_num,
+            importe_num,
+            resultado_num,
+        )
 
         # Fix invalid rows: cantidad > 0 but importe <= 0
         if cantidad_num > 0 and importe_num <= 0:
