@@ -1122,15 +1122,30 @@ class GalloVisualMerger:
         
         return None
 
-    def _build_trade_dedupe_key(self, fecha, cod_instrum, cantidad, precio, operacion) -> Tuple[str, str, float, float, str]:
+    def _normalize_dedupe_scalar(self, value) -> str:
+        if value is None:
+            return ''
+
+        if isinstance(value, (int, float)):
+            value_num = self._to_float(value)
+            if abs(value_num - round(value_num)) < 1e-6:
+                return str(int(round(value_num)))
+            return f"{value_num:.8f}".rstrip('0').rstrip('.')
+
+        return str(value).strip()
+
+    def _build_trade_dedupe_key(self, fecha, cod_instrum, cantidad, precio, operacion, boleto=None) -> Tuple[str, str, str, float, float, str]:
         fecha_dt, _ = self._parse_fecha(fecha)
         fecha_key = fecha_dt.date().isoformat() if fecha_dt else str(fecha or '').strip()
+        boleto_key = self._normalize_dedupe_scalar(boleto)
 
         cantidad_num = self._to_float(cantidad)
         if abs(cantidad_num - round(cantidad_num)) < 1e-6:
             cantidad_num = int(round(cantidad_num))
 
         precio_num = round(self._to_float(precio), 8)
+        if boleto_key:
+            precio_num = 0
         operacion_text = str(operacion or '').strip().lower()
         if 'venta' in operacion_text:
             operacion_key = 'venta'
@@ -1147,10 +1162,28 @@ class GalloVisualMerger:
 
         return (
             fecha_key,
+            boleto_key,
             self._clean_codigo(cod_instrum),
             cantidad_num,
             precio_num,
             operacion_key,
+        )
+
+    def _build_caucion_dedupe_key(self, fecha, liquidacion, operacion, boleto, contado, futuro, moneda) -> Tuple[str, str, str, str, str, str, str]:
+        fecha_dt, _ = self._parse_fecha(fecha)
+        fecha_key = fecha_dt.date().isoformat() if fecha_dt else str(fecha or '').strip()
+
+        liq_dt, _ = self._parse_fecha(liquidacion)
+        liquidacion_key = liq_dt.date().isoformat() if liq_dt else str(liquidacion or '').strip()
+
+        return (
+            fecha_key,
+            liquidacion_key,
+            self._normalize_dedupe_scalar(boleto),
+            str(operacion or '').strip().lower(),
+            self._normalize_dedupe_scalar(contado),
+            self._normalize_dedupe_scalar(futuro),
+            str(moneda or '').strip().lower(),
         )
 
     def _append_precio_tenencias_initial_positions(self, ws, row_out: int, existing_codes: Optional[set] = None) -> int:
@@ -2582,6 +2615,7 @@ class GalloVisualMerger:
                     visual_boletos_for_dedupe.cell(_row, 9).value,
                     visual_boletos_for_dedupe.cell(_row, 10).value,
                     _operacion,
+                    visual_boletos_for_dedupe.cell(_row, 4).value,
                 ))
         except KeyError:
             pass
@@ -2640,7 +2674,14 @@ class GalloVisualMerger:
                     cod_especie = gallo_ws.cell(row, col_codigo).value
                     cantidad = gallo_ws.cell(row, col_cantidad).value
                     precio = gallo_ws.cell(row, col_precio).value
-                    trade_key = self._build_trade_dedupe_key(fecha, cod_especie, cantidad, precio, operacion)
+                    trade_key = self._build_trade_dedupe_key(
+                        fecha,
+                        cod_especie,
+                        cantidad,
+                        precio,
+                        operacion,
+                        gallo_ws.cell(row, col_boleto).value,
+                    )
                     if trade_key in visual_dedupe_keys or ('normalized', trade_key) in seen_gallo_transactions:
                         continue
                     seen_gallo_transactions.add(('normalized', trade_key))
@@ -3056,6 +3097,45 @@ class GalloVisualMerger:
         
         # Recolectar todas las cauciones para ordenar
         all_cauciones = []
+        seen_cauciones = set()
+
+        visual_sheet_name = sheet_name  # "Cauciones Tomadoras" o "Cauciones Colocadoras"
+        visual_caucion_keys = set()
+        if visual_sheet_name in self.visual_wb.sheetnames:
+            visual_ws = self.visual_wb[visual_sheet_name]
+            visual_headers = [str(visual_ws.cell(1, c).value or '').strip().lower() for c in range(1, visual_ws.max_column + 1)]
+
+            def _find_visual_col(options, default_idx):
+                for i, header in enumerate(visual_headers, start=1):
+                    if any(option in header for option in options):
+                        return i
+                return default_idx
+
+            v_col_fecha = _find_visual_col(['concert'], 1)
+            v_col_liq = _find_visual_col(['liquid'], 3)
+            v_col_op = _find_visual_col(['operaci'], 4)
+            v_col_bol = _find_visual_col(['# boleto', 'nro. boleto', 'boleto'], 5)
+            v_col_contado = _find_visual_col(['contado'], 6)
+            v_col_futuro = _find_visual_col(['futuro'], 7)
+            v_col_tc = _find_visual_col(['tipo de cambio', 'tipo cambio'], 8)
+
+            for row in range(2, visual_ws.max_row + 1):
+                fecha = visual_ws.cell(row, v_col_fecha).value
+                operacion = visual_ws.cell(row, v_col_op).value
+                if not fecha or not operacion:
+                    continue
+
+                tipo_cambio_num = self._to_float(visual_ws.cell(row, v_col_tc).value)
+                moneda = 'Dolar MEP' if tipo_cambio_num > 1 else 'Pesos'
+                visual_caucion_keys.add(self._build_caucion_dedupe_key(
+                    fecha,
+                    visual_ws.cell(row, v_col_liq).value,
+                    operacion,
+                    visual_ws.cell(row, v_col_bol).value,
+                    visual_ws.cell(row, v_col_contado).value,
+                    visual_ws.cell(row, v_col_futuro).value,
+                    moneda,
+                ))
         
         # Procesar hojas de Cauciones de Gallo
         for gallo_sheet_name in self.gallo_wb.sheetnames:
@@ -3076,6 +3156,85 @@ class GalloVisualMerger:
             try:
                 gallo_ws = self.gallo_wb[gallo_sheet_name]
             except:
+                continue
+
+            gallo_headers = [str(gallo_ws.cell(1, c).value or '').strip().lower() for c in range(1, gallo_ws.max_column + 1)]
+            is_normalized_gallo_cauciones = (
+                any(header in gallo_headers for header in ['concertación', 'concertacion'])
+                and any('operaci' in header for header in gallo_headers)
+                and any('contado' in header for header in gallo_headers)
+                and any('futuro' in header for header in gallo_headers)
+            )
+            if is_normalized_gallo_cauciones:
+                if gallo_sheet_name.strip().lower() != sheet_name.strip().lower():
+                    continue
+
+                def find_gallo_col(options, default_idx):
+                    for i, header in enumerate(gallo_headers, start=1):
+                        if any(option in header for option in options):
+                            return i
+                    return default_idx
+
+                col_fecha = find_gallo_col(['concert'], 1)
+                col_plazo = find_gallo_col(['plaz'], 2)
+                col_liq = find_gallo_col(['liquid'], 3)
+                col_op = find_gallo_col(['operaci'], 4)
+                col_bol = find_gallo_col(['# boleto', 'nro. boleto', 'boleto'], 5)
+                col_contado = find_gallo_col(['contado'], 6)
+                col_futuro = find_gallo_col(['futuro'], 7)
+                col_tc = find_gallo_col(['tipo de cambio', 'tipo cambio', 't.c.'], 8)
+                col_tasa = find_gallo_col(['tasa'], 9)
+                col_ib = find_gallo_col(['int. bruto', 'interés bruto', 'interes bruto'], 10)
+                col_id = find_gallo_col(['int. dev', 'interés deveng', 'interes deveng'], 11)
+                col_ara = find_gallo_col(['arancel'], 12)
+                col_der = find_gallo_col(['derech'], 13)
+                col_cf = find_gallo_col(['costo fin', 'costo financiero'], 14)
+
+                for row in range(2, gallo_ws.max_row + 1):
+                    fecha = gallo_ws.cell(row, col_fecha).value
+                    liquidacion = gallo_ws.cell(row, col_liq).value
+                    operacion = gallo_ws.cell(row, col_op).value
+                    if not fecha or not operacion:
+                        continue
+
+                    if not self._is_year_2025(liquidacion):
+                        continue
+
+                    tipo_cambio_num = self._to_float(gallo_ws.cell(row, col_tc).value) or 1
+                    moneda = 'Dolar MEP' if tipo_cambio_num > 1 else 'Pesos'
+                    caucion_key = self._build_caucion_dedupe_key(
+                        fecha,
+                        liquidacion,
+                        operacion,
+                        gallo_ws.cell(row, col_bol).value,
+                        gallo_ws.cell(row, col_contado).value,
+                        gallo_ws.cell(row, col_futuro).value,
+                        moneda,
+                    )
+                    if caucion_key in visual_caucion_keys or ('normalized', caucion_key) in seen_cauciones:
+                        continue
+                    seen_cauciones.add(('normalized', caucion_key))
+
+                    auditoria = f"Origen: Gallo-{gallo_sheet_name}-normalized"
+                    all_cauciones.append({
+                        'fecha': self._parse_fecha(fecha)[0] or fecha,
+                        'plazo': gallo_ws.cell(row, col_plazo).value,
+                        'liquidacion': self._parse_fecha(liquidacion)[0] or liquidacion,
+                        'operacion': operacion,
+                        'boleto': gallo_ws.cell(row, col_bol).value,
+                        'contado': gallo_ws.cell(row, col_contado).value,
+                        'futuro': gallo_ws.cell(row, col_futuro).value,
+                        'tipo_cambio': tipo_cambio_num,
+                        'tasa': gallo_ws.cell(row, col_tasa).value,
+                        'interes_bruto': self._to_float(gallo_ws.cell(row, col_ib).value),
+                        'interes_devengado': self._to_float(gallo_ws.cell(row, col_id).value),
+                        'aranceles': self._to_float(gallo_ws.cell(row, col_ara).value),
+                        'derechos': self._to_float(gallo_ws.cell(row, col_der).value),
+                        'costo_financiero': self._to_float(gallo_ws.cell(row, col_cf).value),
+                        'moneda': moneda,
+                        'origen': f"Gallo-{gallo_sheet_name}",
+                        'auditoria': auditoria,
+                    })
                 continue
             
             # Estructura Cauciones Gallo según OneShotSpec:
@@ -3114,7 +3273,7 @@ class GalloVisualMerger:
                 # Parsear fechas
                 fecha_dt, _ = self._parse_fecha(fecha)
                 venc_dt, _ = self._parse_fecha(vencimiento)
-                
+
                 # Calcular plazo (diferencia en días)
                 plazo = 0
                 if fecha_dt and venc_dt:
@@ -3178,7 +3337,6 @@ class GalloVisualMerger:
                 })
         
         # Agregar cauciones de Visual (si existen hojas correspondientes)
-        visual_sheet_name = sheet_name  # "Cauciones Tomadoras" o "Cauciones Colocadoras"
         if visual_sheet_name in self.visual_wb.sheetnames:
             visual_ws = self.visual_wb[visual_sheet_name]
 

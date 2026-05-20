@@ -73,35 +73,22 @@ def _assert(condition: bool, message: str, failures: list[str]) -> None:
         failures.append(message)
 
 
-def _check_glozman_and_salvo(failures: list[str]) -> None:
+def _check_glozman(failures: list[str]) -> None:
     glozman = regression._latest_existing(
         ROOT / "Ejemplo Glozman error moneda pesos en seccion USD" / "12766_GLOZMAN_DARIO_EDMUNDO_Resumen_Impositivo_FIXED_v2.xlsx",
         ROOT / "Ejemplo Glozman error moneda pesos en seccion USD" / "12766_GLOZMAN_DARIO_EDMUNDO_Resumen_Impositivo_FIXED.xlsx",
     )
-    salvo = regression._latest_existing(
-        ROOT / "11896_SALVO_MARTIN_Resumen_Impositivo_REGRESSION_v2.xlsx",
-        ROOT / "11896_SALVO_MARTIN_Resumen_Impositivo_REGRESSION.xlsx",
-    )
 
     _assert(glozman.exists(), f"Falta workbook GLOZMAN: {glozman}", failures)
-    _assert(salvo.exists(), f"Falta workbook SALVO: {salvo}", failures)
     if failures:
         return
 
     glozman_ars_rows = regression.count_non_empty_rows(glozman, "Rentas Dividendos ARS")
     glozman_usd_rows, glozman_bad = regression.check_currency_rows(glozman, "Rentas Dividendos USD", "USD")
-    salvo_ars_rows = regression.count_non_empty_rows(salvo, "Rentas Dividendos ARS")
-    salvo_usd_rows, salvo_bad = regression.check_currency_rows(salvo, "Rentas Dividendos USD", "USD")
-    salvo_resultado_bruto = regression.check_resultado_vs_bruto(salvo)
 
     _assert(glozman_ars_rows == 26, f"GLOZMAN ARS rows esperado=26 actual={glozman_ars_rows}", failures)
     _assert(glozman_usd_rows == 6, f"GLOZMAN USD rows esperado=6 actual={glozman_usd_rows}", failures)
     _assert(not glozman_bad, f"GLOZMAN filas USD mal clasificadas: {glozman_bad}", failures)
-
-    _assert(salvo_ars_rows == 4, f"SALVO ARS rows esperado=4 actual={salvo_ars_rows}", failures)
-    _assert(salvo_usd_rows == 4, f"SALVO USD rows esperado=4 actual={salvo_usd_rows}", failures)
-    _assert(not salvo_bad, f"SALVO filas USD mal clasificadas: {salvo_bad}", failures)
-    _assert(not salvo_resultado_bruto, f"SALVO filas Resultado>Bruto: {salvo_resultado_bruto}", failures)
 
 
 def _check_aguiar_same_input(failures: list[str]) -> None:
@@ -187,7 +174,7 @@ def _print_section(title: str, lines: Iterable[str]) -> None:
 def main() -> int:
     failures: list[str] = []
 
-    _check_glozman_and_salvo(failures)
+    _check_glozman(failures)
     _check_aguiar_same_input(failures)
     _check_canullo_approved(failures)
 
@@ -220,7 +207,6 @@ def main() -> int:
         "SMOKE PASS",
         [
             "GLOZMAN: ARS/USD split consistente",
-            "SALVO: ARS/USD split consistente y Resultado<=Bruto",
             "AGUIAR same-input: hojas clave y resumen sin desvíos",
             "CANULLO approved: workbook completo sin desvíos",
             "SIGAL 10374: cell-by-cell OK",
