@@ -148,14 +148,10 @@ def parse_parentheses_negative(value: str) -> Optional[float]:
             value = value[:-1]
     elif re.match(r'^\d{1,3}(\.\d{3})+,\d{3}$', value):
         integer_part, decimal_group = value.rsplit(',', 1)
-        digits = re.sub(r'\D', '', integer_part)
         if re.match(r'^0+$', decimal_group):
-            # All-zero decimal (e.g. "580.000,000") → European 580000.000
-            # NOT garbled thousands 580.000.000.  OCR options often emit
-            # trailing decimal zeros that look like a thousands group.
+            # Values like "580.000,000" are regular European decimals
+            # (580000.000), not a hidden extra thousands group.
             value = integer_part.replace('.', '') + '.' + decimal_group
-        elif is_negative or len(digits) >= 6:
-            value = integer_part + '.' + decimal_group
     # Strip any remaining trailing comma or period (OCR truncation)
     value = value.rstrip(',').rstrip('.')
     
@@ -231,6 +227,13 @@ def parse_visual_quantity_value(value) -> Optional[float]:
     if raw.startswith('-'):
         is_negative = True
         raw = raw[1:]
+
+    repeated_zero_commas = re.match(r'^(\d{1,3}(?:\.\d{3})?)(?:,(0+))+$', raw)
+    if repeated_zero_commas:
+        base_part = raw.split(',', 1)[0]
+        if re.match(r'^\d{1,3}(?:\.\d{3})*$', base_part):
+            result = int(base_part.replace('.', ''))
+            return -result if is_negative else result
 
     raw = raw.rstrip(',').rstrip('.')
 
@@ -726,7 +729,7 @@ def _maybe_rescue_visual_neto(current_neto, qty_value, precio_value, gastos_valu
 
 
 def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
-    """Genera candidatos para cantidades OCR ambiguas como 150.000,000 o 166.000,0000."""
+    """Genera candidatos para cantidades OCR ambiguas como 150.000,000 o 157.000,000000."""
     if not value or not isinstance(value, str):
         return []
 
@@ -736,7 +739,7 @@ def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
     cleaned = fix_trailing_negative(cleaned)
     cleaned = cleaned.lstrip('-').rstrip(',').rstrip('.')
 
-    match = re.match(r'^(\d{1,3}(?:\.\d{3})*),(\d{3,4})$', cleaned)
+    match = re.match(r'^(\d{1,3}(?:\.\d{3})*),(\d{3,})$', cleaned)
     if not match:
         return []
 
@@ -744,7 +747,8 @@ def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
     if set(decimal_group) != {'0'}:
         return []
 
-    integer_digits = match.group(1).replace('.', '')
+    integer_part = match.group(1)
+    integer_digits = integer_part.replace('.', '')
     sign = -1 if is_negative else 1
 
     candidates = []
@@ -752,10 +756,17 @@ def _parse_ambiguous_quantity_candidates(value: str) -> List[float]:
         candidates.append(sign * float(f"{integer_digits}.0"))
     except Exception:
         pass
-    try:
-        candidates.append(sign * float(integer_digits + decimal_group))
-    except Exception:
-        pass
+
+    # OCR can inject a spurious trailing ".000" group before an all-zero decimal
+    # tail, e.g. "157.000,000000" for a true quantity of 157. Keep the scaled
+    # parse as one candidate, but also consider the de-scaled integer.
+    if integer_part.endswith('.000'):
+        trimmed = integer_part[:-4].replace('.', '')
+        if trimmed:
+            try:
+                candidates.append(sign * float(trimmed))
+            except Exception:
+                pass
 
     # De-duplicate preserving order
     deduped = []

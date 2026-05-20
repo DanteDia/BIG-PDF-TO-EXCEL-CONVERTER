@@ -333,7 +333,98 @@ def test_visual_quantity_rescue_exact_1000x_match_without_punctuation_anomaly():
     assert math.isclose(ws_boletos.cell(row_90535, 12).value, 9694400, rel_tol=0, abs_tol=0.01)
 
 
+def test_visual_boletos_prefers_descaled_trailing_dot_zero_group_when_bruto_matches():
+    wb = Workbook()
+    ws_boletos = wb.active
+    ws_boletos.title = 'Boletos'
+    ws_boletos.append(BOLETOS_HEADERS)
+    ws_boletos.append([
+        'Acciones', '4/11/2025', '4/11/2025', 146258, 'Pesos',
+        'Venta Contado', 94, 'BBVA ARG ESC S', '(157.000,000000)', 9020,
+        1, -1416140, 0, -2913, -1413227
+    ])
+    ws_boletos.append([
+        'Acciones', '4/11/2025', '4/11/2025', 146257, 'Pesos',
+        'Block Venta', 94, 'BBVA ARG ESC S', '(843.000,000000)', 9020,
+        1, -7603860, 0, -6440.47, -7597419.5
+    ])
+    ws_boletos.append([
+        'Acciones', '28/10/2025', '28/10/2025', 141673, 'Pesos',
+        'Venta Contado', 710, 'YPF S.A. ESCRIT.', '(350.000,000000)', 49400,
+        1, -17290000, 0, -35565.53, -17254434.47
+    ])
+    ws_boletos.append([
+        'Acciones', '14/11/2025', '14/11/2025', 152732, 'Pesos',
+        'Block Venta', 457, 'PAMPA ENERGIA S', '(7.000,0000000)', 5145,
+        1, -36015, 0, -30.5, -35984.5
+    ])
+    ws_boletos.append([
+        'Acciones', '25/6/2025', '26/6/2025', 72214, 'Pesos',
+        'Block Compra', 457, 'PAMPA ENERGIA S', '1.000,00000', 3365,
+        1, 3365000, 0, 2850.16, 3367850.16
+    ])
+
+    postprocess_visual_workbook(wb)
+
+    assert ws_boletos.cell(_find_boleto_row(ws_boletos, 146258), 9).value == -157
+    assert ws_boletos.cell(_find_boleto_row(ws_boletos, 146257), 9).value == -843
+    assert ws_boletos.cell(_find_boleto_row(ws_boletos, 141673), 9).value == -350
+    assert ws_boletos.cell(_find_boleto_row(ws_boletos, 152732), 9).value == -7
+    assert ws_boletos.cell(_find_boleto_row(ws_boletos, 72214), 9).value == 1000
+
+
+def test_visual_repeated_comma_zero_tail_quantities_stay_aligned_between_boletos_and_resultado():
+    wb = Workbook()
+    ws_boletos = wb.active
+    ws_boletos.title = 'Boletos'
+    ws_boletos.append(BOLETOS_HEADERS)
+    ws_boletos.append([
+        'Acciones', '3/11/2025', '4/11/2025', 146258, 'Pesos',
+        'Venta Contado', 94, 'BBVA ARG ESC S', '(157,000,000)', 9020,
+        1, '(1.416.140,0)', 0, '(2.913,00)', '(1.413.227,0)'
+    ])
+    ws_boletos.append([
+        'Acciones', '14/11/2025', '14/11/2025', 152732, 'Pesos',
+        'Block Venta', 457, 'PAMPA ENERGIA S', '(7,000,000,00)', 5145,
+        1, '(36.015,00)', 0, '(30,50)', '(35.984,50)'
+    ])
+    ws_boletos.append([
+        'Acciones', '7/11/2025', '10/11/2025', 149217, 'Pesos',
+        'Block Compra', 94, 'BBVA ARG ESC S', '1.000,000,00', 7795,
+        1, '7.795.000,0', 0, '6.602,37', '7.801.602,3'
+    ])
+
+    ws_result = wb.create_sheet('Resultado Ventas ARS')
+    ws_result.append(RESULTADO_HEADERS)
+    ws_result.append([
+        'Acciones', 'BBVA ARG ESC S 1 V. - Pesos', 94, '3/11/2025',
+        '4/11/2025', 'Pesos', 'Venta Contado', '(157,000,000)', 9020,
+        '(1.416.140,0)', 0, 1, '(2.913,00)', 0, '552.981,35'
+    ])
+    ws_result.append([
+        'Acciones', 'PAMPA ENERGIA S.A. ESCRIT. 1 VOTO - Pesos', 457, '14/11/2025',
+        '14/11/2025', 'Pesos', 'Block Venta', '(7,000,000,00)', 5145,
+        '(36.015,00)', 0, 1, '(30,50)', 0, '29.226,55'
+    ])
+
+    postprocess_visual_workbook(wb)
+
+    row_146258 = _find_boleto_row(ws_boletos, 146258)
+    row_152732 = _find_boleto_row(ws_boletos, 152732)
+    row_149217 = _find_boleto_row(ws_boletos, 149217)
+    result_94 = _find_resultado_row(ws_result, 94, '3/11/2025', 'Pesos', 'Venta Contado')
+    result_457 = _find_resultado_row(ws_result, 457, '14/11/2025', 'Pesos', 'Block Venta')
+
+    assert ws_boletos.cell(row_146258, 9).value == -157
+    assert ws_boletos.cell(row_152732, 9).value == -7
+    assert ws_boletos.cell(row_149217, 9).value == 1000
+    assert ws_result.cell(result_94, 8).value == -157
+    assert ws_result.cell(result_457, 8).value == -7
+
+
 if __name__ == '__main__':
     test_visual_quantity_rescue_from_resultado_anchors()
     test_visual_quantity_rescue_exact_1000x_match_without_punctuation_anomaly()
+    test_visual_boletos_prefers_descaled_trailing_dot_zero_group_when_bruto_matches()
+    test_visual_repeated_comma_zero_tail_quantities_stay_aligned_between_boletos_and_resultado()
     print('ok')

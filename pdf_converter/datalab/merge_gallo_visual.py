@@ -96,6 +96,56 @@ class GalloVisualMerger:
         text = " ".join(str(v or "") for v in values).lower()
         return any(token in text for token in ['dolar', 'dólar', 'usd', 'cable', 'mep'])
 
+    def _is_visual_stock_adjustment_operation(self, tipo_operacion) -> bool:
+        """Detecta ajustes de stock que Visual publica solo en Resultado Ventas."""
+        op_text = str(tipo_operacion or '').strip().lower()
+        return 'stock dividend' in op_text
+
+    def _collect_visual_resultado_stock_adjustments(self, sheet_name: str) -> List[Dict[str, object]]:
+        """Recupera ajustes de stock Visual que deben participar del running stock final."""
+        if sheet_name not in self.visual_wb.sheetnames:
+            return []
+
+        visual_ws = self.visual_wb[sheet_name]
+        adjustments = []
+
+        for row in range(2, visual_ws.max_row + 1):
+            tipo_operacion = visual_ws.cell(row, 7).value
+            if not self._is_visual_stock_adjustment_operation(tipo_operacion):
+                continue
+
+            concertacion_raw = visual_ws.cell(row, 4).value
+            concertacion, year = self._parse_fecha(concertacion_raw)
+            if year != 2025:
+                continue
+
+            cod_instrum = visual_ws.cell(row, 3).value
+            if not cod_instrum:
+                continue
+
+            liquidacion_raw = visual_ws.cell(row, 5).value
+            liquidacion, _ = self._parse_fecha(liquidacion_raw)
+
+            adjustments.append({
+                'origen': f'Visual-{sheet_name}',
+                'tipo_instrumento': visual_ws.cell(row, 1).value,
+                'instrumento': visual_ws.cell(row, 2).value,
+                'cod_instrum': cod_instrum,
+                'concertacion': concertacion or concertacion_raw,
+                'liquidacion': liquidacion or liquidacion_raw,
+                'moneda': visual_ws.cell(row, 6).value,
+                'tipo_operacion': tipo_operacion,
+                'cantidad': visual_ws.cell(row, 8).value,
+                'precio': visual_ws.cell(row, 9).value,
+                'bruto': visual_ws.cell(row, 10).value,
+                'interes': visual_ws.cell(row, 11).value or 0,
+                'tipo_cambio': visual_ws.cell(row, 12).value or 1,
+                'gastos': visual_ws.cell(row, 13).value or 0,
+                '_idx': 100000 + row,
+            })
+
+        return adjustments
+
     def _get_gallo_metadata_currency_hint(self, cod_especie=None, especie: str = "") -> Optional[str]:
         """Infers the natural currency from species metadata when Gallo's sheet is ambiguous."""
         candidates = []
@@ -483,6 +533,32 @@ class GalloVisualMerger:
         ratio = stock_val / nominal_val
         return ratio < 0.01 or ratio > 100
 
+    def _get_result_guardrail_ratio(self, resultado: float, bruto_ref: float, costo: float, moneda_tipo: str) -> float:
+        """Devuelve la razón económica usada para auditar resultados extremos.
+
+        En ARS conservamos la comparación histórica contra bruto. En USD, comparar
+        `|resultado|` contra `|bruto|` sobrerreacciona cuando la venta ocurre muy por
+        debajo del costo histórico; allí la referencia útil es `|costo|`, que además
+        coincide con la intuición del ratio entre precio de venta y precio stock.
+        """
+        resultado_abs = abs(self._to_float(resultado))
+        if resultado_abs <= 0:
+            return 0.0
+
+        if moneda_tipo == "USD":
+            costo_abs = abs(self._to_float(costo))
+            if costo_abs > 0:
+                return resultado_abs / costo_abs
+
+        bruto_abs = abs(self._to_float(bruto_ref))
+        if bruto_abs > 0:
+            return resultado_abs / bruto_abs
+        return 0.0
+
+    def _position_price_is_already_usd(self, cod_instrum: str) -> bool:
+        """Indica si el precio de posición ya está expresado en USD unitarios."""
+        return self._is_accion_exterior(cod_instrum)
+
     def _resolve_usd_stock_price(self, raw_price, nominal_price, tipo_instrumento: str, cod_instrum: str = "") -> float:
         """Normaliza el precio de stock inicial USD usando reglas y fallbacks de seguridad."""
         stock_price = self._to_float(raw_price)
@@ -621,6 +697,8 @@ class GalloVisualMerger:
         self._precios_iniciales_by_codigo = {}  # codigo -> {ticker, precio}
         self._precio_tenencias_by_codigo = {}
         self._precio_tenencias_by_ticker = {}
+        self._precio_tenencias_qty_by_codigo = {}
+        self._precio_tenencias_qty_by_ticker = {}
         self._ratios_cedears_cache = {}
         
         # Load ratio cache first (needed by _build_precio_tenencias_cache)
@@ -715,9 +793,11 @@ class GalloVisualMerger:
 
     def _build_precio_tenencias_cache(self, ws):
         """Construye cache de PrecioTenenciasIniciales por código y ticker.
-        
-        Stores the adjusted price: raw / ratio for acciones del exterior,
-        raw / 1 for everything else.
+
+        Running stock in ARS must compare Cedear sales against the traded Cedear
+        unit cost, not against the ratio-adjusted underlying price. Keep the
+        workbook-level `Precio Ajustado` column only as auxiliary reference and
+        cache the raw unit price here.
         """
         headers = [str(ws.cell(1, c).value or '').strip().lower() for c in range(1, ws.max_column + 1)]
 
@@ -767,24 +847,16 @@ class GalloVisualMerger:
                 except Exception:
                     raw_price = 0
 
-            # Ratio: real CEDEAR ratio for acciones del exterior, 1 for everything else
-            ratio = 1
-            cod_clean = self._clean_codigo(str(codigo)) if codigo else ''
-            if cod_clean and self._is_accion_exterior(cod_clean):
-                r = self._get_ratio_for_especie(
-                    str(ticker) if ticker else '',
-                    str(especie_name) if especie_name else '',
-                )
-                if r:
-                    ratio = r
-
-            adjusted_price = raw_price / ratio
-
             if codigo:
                 codigo_clean = self._clean_codigo(str(codigo))
-                self._precio_tenencias_by_codigo[codigo_clean] = adjusted_price
+                self._precio_tenencias_by_codigo[codigo_clean] = raw_price
+                if cantidad_num > 0:
+                    self._precio_tenencias_qty_by_codigo[codigo_clean] = cantidad_num
             if ticker:
-                self._precio_tenencias_by_ticker[str(ticker).strip().upper()] = adjusted_price
+                ticker_key = str(ticker).strip().upper()
+                self._precio_tenencias_by_ticker[ticker_key] = raw_price
+                if cantidad_num > 0:
+                    self._precio_tenencias_qty_by_ticker[ticker_key] = cantidad_num
 
     def _normalize_ratio_key(self, val: str) -> str:
         if not val:
@@ -1098,6 +1170,26 @@ class GalloVisualMerger:
                 precio = self._precio_tenencias_by_ticker.get(ticker_var, 0)
                 if precio:
                     return precio
+
+        return 0
+
+    def _get_cantidad_tenencia_inicial(self, codigo: Optional[str], ticker: str = "") -> float:
+        """Obtiene cantidad inicial desde PrecioTenenciasIniciales (por código o ticker)."""
+        if codigo:
+            codigo_clean = self._clean_codigo(str(codigo))
+            cantidad = self._precio_tenencias_qty_by_codigo.get(codigo_clean, 0)
+            if cantidad:
+                return cantidad
+
+        ticker_upper = str(ticker).upper().strip()
+        if ticker_upper:
+            cantidad = self._precio_tenencias_qty_by_ticker.get(ticker_upper, 0)
+            if cantidad:
+                return cantidad
+            for ticker_var in self._generate_ticker_variations(ticker_upper):
+                cantidad = self._precio_tenencias_qty_by_ticker.get(ticker_var, 0)
+                if cantidad:
+                    return cantidad
 
         return 0
 
@@ -1801,6 +1893,7 @@ class GalloVisualMerger:
             is_gallo = origen.upper().startswith("GALLO")
             
             cantidad = self._to_float(ws.cell(row, 9).value)  # Col I = Cantidad
+            is_stock_adjustment = self._is_visual_stock_adjustment_operation(ws.cell(row, 8).value)
             
             # Columnas varían entre ARS y USD
             if moneda_tipo == "ARS":
@@ -1938,9 +2031,9 @@ class GalloVisualMerger:
                 is_usd_sheet = (moneda_tipo == "USD")
                 stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo, for_usd=is_usd_sheet)
                 
-                # Para USD: convertir precio de posición a USD 
-                # SOLO si vino de Posicion (stock_cantidad > 0), porque el fallback ya viene en USD
-                if is_usd_sheet and stock_cantidad > 0 and valor_usd_dia > 0:
+                # Para USD: convertir precio de posición a USD SOLO si todavía está en ARS.
+                # Las acciones del exterior ya traen precio unitario en USD desde Posición Gallo.
+                if is_usd_sheet and stock_cantidad > 0 and valor_usd_dia > 0 and not self._position_price_is_already_usd(cod_instrum):
                     stock_precio = stock_precio / valor_usd_dia
                 # Nota: si stock_cantidad == 0, el precio ya viene en USD (del fallback)
 
@@ -1980,7 +2073,9 @@ class GalloVisualMerger:
             # Actualizar stock para la próxima fila
             if cantidad > 0:  # COMPRA - promedio ponderado
                 valor_anterior = stock_cantidad * stock_precio
-                if moneda_tipo == "USD":
+                if is_stock_adjustment:
+                    valor_nuevo = 0
+                elif moneda_tipo == "USD":
                     # Para USD: usar precio nominal en USD
                     valor_nuevo = cantidad * precio_resultado_usd
                 else:
@@ -2028,8 +2123,12 @@ class GalloVisualMerger:
             bruto_ref = bruto if moneda_tipo == "ARS" else bruto_usd
             audit_col = 26 if moneda_tipo == "ARS" else 28
             warnings = []
-            if bruto_ref and abs(resultado) > abs(bruto_ref):
-                warnings.append('RESULTADO>BRUTO')
+            result_guardrail_ratio = self._get_result_guardrail_ratio(resultado, bruto_ref, costo, moneda_tipo)
+            if result_guardrail_ratio > 0.8:
+                if moneda_tipo == "USD":
+                    warnings.append('RESULTADO/COSTO>0.8')
+                else:
+                    warnings.append('RESULTADO>BRUTO')
             if current_nominal_price and precio_stock_inicial:
                 current_abs = abs(current_nominal_price)
                 stock_abs = abs(precio_stock_inicial)
@@ -2118,6 +2217,11 @@ class GalloVisualMerger:
                 if pos_cod and self._clean_codigo(str(pos_cod)) == cod_instrum:
                     cantidad = self._to_float(pos_ws.cell(r, 9).value)   # Col I = cantidad
                     precio_nominal = self._to_float(pos_ws.cell(r, 22).value)  # Col V = Precio Nominal
+                    if not for_usd:
+                        tipo_instrumento = str(pos_ws.cell(r, 21).value or '')
+                        cantidad_tenencia = self._get_cantidad_tenencia_inicial(cod_instrum)
+                        if 'cedear' in tipo_instrumento.lower() and cantidad_tenencia > cantidad:
+                            cantidad = cantidad_tenencia
                     return (cantidad, precio_nominal)
         
         # No encontrado en Posicion - usar PrecioTenenciasIniciales si está disponible
@@ -2355,9 +2459,14 @@ class GalloVisualMerger:
                 cotizacion_usd = 1148.93  # Dólar Cable 31/12/2024
                 precio_inicial = precio_inicial * cotizacion_usd
             
-            # Precio a utilizar = PrecioTenenciasIniciales (adjusted) si existe, sino PreciosInicialesEspecies
+            # Para acciones del exterior, la posición Gallo ya trae el precio unitario en USD.
+            # Priorizar ese valor evita mezclar una base en pesos de PrecioTenencias con ventas USD.
+            codigo_clean = self._clean_codigo(codigo) if codigo else ''
             precio_tenencia = self._get_precio_tenencia_inicial(codigo, ticker)
-            if precio_tenencia > 0:
+            if self._position_price_is_already_usd(codigo_clean) and precio_usd > 0:
+                precio_a_utilizar = precio_usd
+                origen_precio = "PosicionInicialUSD"
+            elif precio_tenencia > 0:
                 precio_a_utilizar = precio_tenencia
                 origen_precio = "PrecioTenenciasIniciales"
             else:
@@ -3814,6 +3923,8 @@ class GalloVisualMerger:
                 '_idx': boletos_row,
             })
 
+        transactions.extend(self._collect_visual_resultado_stock_adjustments('Resultado Ventas ARS'))
+
         def _to_sortable_date(value):
             if isinstance(value, datetime):
                 return value
@@ -3898,7 +4009,13 @@ class GalloVisualMerger:
             
             # Col Q: Cantidad Stock Inicial (siempre desde Posicion Inicial Gallo)
             if row_out == 2:
-                ws.cell(row_out, 17, f'={_si_error(f"BUSCARV(D{row_out};\'Posicion Inicial Gallo\'!D:I;6;FALSO)", "0")}')
+                gallo_qty_lookup = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:I;6;FALSO)", "0")
+                if use_precio_tenencias:
+                    tenencias_qty_lookup = _si_error(f"BUSCARV(D{row_out};PrecioTenenciasIniciales!A:D;4;FALSO)", "0")
+                    qty_lookup = f'SI({tenencias_qty_lookup}>{gallo_qty_lookup};{tenencias_qty_lookup};{gallo_qty_lookup})'
+                else:
+                    qty_lookup = gallo_qty_lookup
+                ws.cell(row_out, 17, f'={qty_lookup}')
                 # Col R: Precio Stock Inicial - Usa col V (19 desde D) = Precio Nominal
                 # Con fallback a PrecioTenenciasIniciales y luego PreciosInicialesEspecies
                 pos_lookup_gallo = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:V;19;FALSO)", "0")
@@ -3913,7 +4030,13 @@ class GalloVisualMerger:
                 explicacion_q = f"BUSCARV(D{row_out}→Posicion Inicial Gallo col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
-                ws.cell(row_out, 17, f'=SI(D{row_out}=D{prev};V{prev};{_si_error(f"BUSCARV(D{row_out};\'Posicion Inicial Gallo\'!D:I;6;FALSO)", "0")})')
+                gallo_qty_lookup = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:I;6;FALSO)", "0")
+                if use_precio_tenencias:
+                    tenencias_qty_lookup = _si_error(f"BUSCARV(D{row_out};PrecioTenenciasIniciales!A:D;4;FALSO)", "0")
+                    qty_lookup = f'SI({tenencias_qty_lookup}>{gallo_qty_lookup};{tenencias_qty_lookup};{gallo_qty_lookup})'
+                else:
+                    qty_lookup = gallo_qty_lookup
+                ws.cell(row_out, 17, f'=SI(D{row_out}=D{prev};V{prev};{qty_lookup})')
                 # Col R: Con fallback
                 pos_lookup_gallo = _si_error(f"BUSCARV(D{row_out};'Posicion Inicial Gallo'!D:V;19;FALSO)", "0")
                 if use_precio_tenencias:
@@ -4185,8 +4308,11 @@ class GalloVisualMerger:
                     )
                 else:
                     fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
-                # Fórmula: SI(P=0,0; usa precio fallback o posición ya expresado en USD nominal)
-                ws.cell(row_out, 21, f'=SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}/P{row_out}))')
+                # Las acciones del exterior ya llegan a Posición Gallo con precio unitario en USD.
+                if self._position_price_is_already_usd(self._clean_codigo(str(cod))):
+                    ws.cell(row_out, 21, f'=SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo})')
+                else:
+                    ws.cell(row_out, 21, f'=SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}/P{row_out}))')
                 explicacion_t = f"T=BUSCARV(D{row_out}→Posicion Inicial Gallo col V=Precio Nominal, fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             else:
                 prev = row_out - 1
@@ -4200,7 +4326,10 @@ class GalloVisualMerger:
                     )
                 else:
                     fallback_precio = _si_error(f"BUSCARV(D{row_out};PreciosInicialesEspecies!A:J;10;FALSO)", "0")
-                ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}/P{row_out})))')
+                if self._position_price_is_already_usd(self._clean_codigo(str(cod))):
+                    ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}))')
+                else:
+                    ws.cell(row_out, 21, f'=SI(D{row_out}=D{prev};Z{prev};SI(P{row_out}=0;0;SI({pos_lookup_gallo}=0;{fallback_precio};{pos_lookup_gallo}/P{row_out})))')
                 explicacion_t = f"SI D{row_out}=D{prev}: Z{prev}, SINO: BUSCARV(col V=Precio Nominal (Posicion Inicial Gallo), fallback PrecioTenenciasIniciales/PreciosInicialesEspecies)"
             
             # Col V: Costo por venta = Cantidad * Precio Stock USD (si venta)

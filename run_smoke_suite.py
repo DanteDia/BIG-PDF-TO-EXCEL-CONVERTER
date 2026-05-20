@@ -7,6 +7,7 @@ import sys
 from openpyxl import load_workbook
 
 from compare_workbooks import compare_workbooks
+from smoke_test_common import SmokeTestConfig, run_smoke
 import verify_regression_cases as regression
 
 
@@ -171,51 +172,60 @@ def _print_section(title: str, lines: Iterable[str]) -> None:
         print(line)
 
 
+def _dedicated_smoke_configs() -> list[SmokeTestConfig]:
+    from smoke_test_koltan_13353 import CONFIG as KOLTAN_CONFIG
+    from smoke_test_prida import CONFIG as PRIDA_CONFIG
+    from smoke_test_sigal import CONFIG as SIGAL_CONFIG
+    from smoke_test_sturman import CONFIG as STURMAN_CONFIG
+    from smoke_test_sturman_11688 import CONFIG as STURMAN_11688_CONFIG
+
+    return [
+        SIGAL_CONFIG,
+        PRIDA_CONFIG,
+        STURMAN_CONFIG,
+        STURMAN_11688_CONFIG,
+        KOLTAN_CONFIG,
+    ]
+
+
+def _run_dedicated_smokes(failures: list[str], passes: list[str]) -> None:
+    smoke_labels = {
+        "SIGAL 10374": "SIGAL 10374: cell-by-cell OK",
+        "PRIDA 10488": "PRIDA 10488: cell-by-cell OK",
+        "J_STURMAN 2797": "STURMAN 2797: cell-by-cell OK",
+        "STURMAN 11688": "STURMAN 11688: cell-by-cell OK + micro-price guard + inflation guard",
+        "KOLTAN 13353": "KOLTAN 13353: cell-by-cell OK + inflation guard",
+    }
+
+    for config in _dedicated_smoke_configs():
+        print(f"\n>>> Running dedicated smoke: {config.title}")
+        exit_code = run_smoke(config)
+        if exit_code != 0:
+            failures.append(f"{config.title} FAILED")
+            continue
+        passes.append(smoke_labels.get(config.title, f"{config.title}: OK"))
+
+
 def main() -> int:
     failures: list[str] = []
+    passes = [
+        "GLOZMAN: ARS/USD split consistente",
+        "AGUIAR same-input: hojas clave y resumen sin desvíos",
+        "CANULLO approved: workbook completo sin desvíos",
+    ]
 
     _check_glozman(failures)
     _check_aguiar_same_input(failures)
     _check_canullo_approved(failures)
 
-    # Run dedicated smoke tests (Sigal, Prida, Sturman 2797, Sturman 11688, Koltan 13353)
-    import subprocess
-    for script in [
-        "smoke_test_sigal.py",
-        "smoke_test_prida.py",
-        "smoke_test_sturman.py",
-        "smoke_test_sturman_11688.py",
-        "smoke_test_koltan_13353.py",
-    ]:
-        script_path = ROOT / script
-        if script_path.exists():
-            result = subprocess.run(
-                [sys.executable, str(script_path)],
-                capture_output=True, text=True, cwd=str(ROOT),
-            )
-            if result.returncode != 0:
-                failures.append(f"{script} FAILED (exit {result.returncode})")
-                # Show last 5 lines of output for diagnostics
-                for line in (result.stdout + result.stderr).strip().splitlines()[-5:]:
-                    failures.append(f"  {line}")
+    if not failures:
+        _run_dedicated_smokes(failures, passes)
 
     if failures:
         _print_section("SMOKE FAIL", failures)
         return 1
 
-    _print_section(
-        "SMOKE PASS",
-        [
-            "GLOZMAN: ARS/USD split consistente",
-            "AGUIAR same-input: hojas clave y resumen sin desvíos",
-            "CANULLO approved: workbook completo sin desvíos",
-            "SIGAL 10374: cell-by-cell OK",
-            "PRIDA 11797: cell-by-cell OK",
-            "STURMAN 2797: cell-by-cell OK",
-            "STURMAN 11688: cell-by-cell OK + micro-price guard + inflation guard",
-            "KOLTAN 13353: cell-by-cell OK + inflation guard",
-        ],
-    )
+    _print_section("SMOKE PASS", passes)
     return 0
 
 
