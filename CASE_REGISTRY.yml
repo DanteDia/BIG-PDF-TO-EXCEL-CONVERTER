@@ -1,0 +1,67 @@
+# Machine-readable case registry for workflow tools.
+# Keep this compact. Detailed fiscal evidence belongs in CASE_FINDINGS_INDEX.md.
+
+schema_version: 1
+last_updated: 2026-05-21
+
+cases:
+  cicero_10537:
+    client: "Cicero Miguel"
+    comitente: "10537"
+    status: under-review
+    handoff: CASE_HANDOFFS/CICERO_10537.md
+    latest_commit: "6aed231"
+    latest_audit:
+      path: LOCAL_RELEASE_AUDIT_CICERO_AFTERFIX.json
+      target: LOCAL_VERIFY_CURRENT_CICERO_AFTERFIX/CICERO_CURRENT_AFTERFIX_values.xlsx
+      high: 0
+      review: 9
+      rules:
+        RES-ARS-RATIO-001: 9
+    local_outputs:
+      folder: LOCAL_VERIFY_CURRENT_CICERO_AFTERFIX
+      values: LOCAL_VERIFY_CURRENT_CICERO_AFTERFIX/CICERO_CURRENT_AFTERFIX_values.xlsx
+      formulas: LOCAL_VERIFY_CURRENT_CICERO_AFTERFIX/CICERO_CURRENT_AFTERFIX_formulas.xlsx
+      pdf: LOCAL_VERIFY_CURRENT_CICERO_AFTERFIX/CICERO_CURRENT_AFTERFIX_final.pdf
+    findings:
+      - CIC-GALLO-POSITION-DATE-001
+      - CIC-GALLO-POSITION-CONTINUATION-001
+      - CIC-PRECIO-TENENCIAS-NEGATIVE-INVESTED-001
+      - CIC-USD-POSITION-PRICE-001
+      - CIC-USD-GUARDRAIL-COST-001
+      - CIC-ARS-INITIAL-QTY-001
+      - CIC-VISUAL-STOCK-DIVIDEND-001
+    remaining_reviews:
+      - "Resultado Ventas ARS rows 33-34, code 30035, SUPV ratio review"
+      - "Resultado Ventas ARS rows 326-332, code 8481, AMD CEDEAR ratio review"
+    notes:
+      - "Safe to test through app after commit 6aed231, but not approved as smoke."
+      - "Recovered-cost rows are no longer review triggers when explicitly marked PrecioTenenciasCostoRecuperado."
+
+  delrio_10980:
+    client: "Del Rio"
+    comitente: "10980"
+    status: approved-smoke-candidate
+    handoff: null
+    findings:
+      - DEL-PRECIO-EMBEDDED-QTY-001
+      - DEL-GALLO-NORMALIZED-BOLETOS-001
+      - DEL-LEGACY-NORMALIZED-UNIFICATION-001
+    notes:
+      - "User confirmed Del Rio is an approved smoke. Promote to blocking smoke suite when hardening releases."
+
+  approved_smoke_suite:
+    client: "Approved smoke baselines"
+    comitente: null
+    status: approved-smoke
+    handoff: null
+    notes:
+      - "Frozen inputs are the release floor. Do not rebaseline without a documented case finding."
+
+statuses:
+  approved-smoke: "Blocks releases; frozen inputs and baseline are accepted."
+  approved-manual: "Accepted by human review, not yet automated as smoke."
+  approved-smoke-candidate: "Should be promoted into the blocking smoke suite."
+  under-review: "Useful for testing and investigation, not release truth."
+  known-failing: "Do not chase without a new request."
+  superseded: "Kept for history only."

@@ -21,10 +21,12 @@ Last updated: 2026-05-21
 
 ## Context Sources To Read First
 
-1. [CASE_FINDINGS_INDEX.md](CASE_FINDINGS_INDEX.md) for validated business and fiscal rules.
-2. This file for current branch/case status.
-3. The relevant handoff in [CASE_HANDOFFS](CASE_HANDOFFS).
-4. The latest audit JSON for any case being discussed.
+1. [CLAUDE.md](CLAUDE.md) for the durable agent/human operating contract.
+2. [CASE_REGISTRY.yml](CASE_REGISTRY.yml) for machine-readable case status.
+3. [CASE_FINDINGS_INDEX.md](CASE_FINDINGS_INDEX.md) for validated business and fiscal rules.
+4. This file for current branch/case status.
+5. The relevant handoff in [CASE_HANDOFFS](CASE_HANDOFFS).
+6. The latest audit JSON for any case being discussed.
 
 ## Case Status
 
@@ -55,6 +57,13 @@ Check pushed state:
 git rev-parse HEAD
 git rev-parse origin/main
 git log -1 --oneline
+```
+
+Run repo context checks:
+
+```powershell
+python repo_doctor.py
+python explain_audit.py LOCAL_VERIFY_CURRENT_CICERO_AFTERFIX\CICERO_CURRENT_AFTERFIX_values.xlsx
 ```
 
 ## Commit Hygiene
