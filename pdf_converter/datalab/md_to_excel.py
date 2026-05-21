@@ -170,6 +170,100 @@ class MarkdownTableParser:
             return ""
         return re.sub(r'<[^>]+>', '', str(value)).strip()
 
+    def _extract_inline_gallo_section_name(self, line: str) -> Optional[str]:
+        """Detect inline Gallo section markers embedded as single-cell table rows."""
+        if not line.startswith('|'):
+            return None
+
+        cells = self._parse_table_row(line)
+        non_empty = [self._clean_markup_text(cell) for cell in cells if self._clean_markup_text(cell)]
+        if len(non_empty) != 1:
+            return None
+
+        text = non_empty[0]
+        if text.upper().startswith('POSICION AL '):
+            return text
+
+        return None
+
+    def _is_gallo_position_section(self, section: Optional[str]) -> bool:
+        return section in {"Posicion Inicial", "Posicion Final"}
+
+    def _is_gallo_position_category(self, section_name: str, matched_section: Optional[str]) -> bool:
+        if not matched_section or matched_section in {"Posicion Inicial", "Posicion Final"}:
+            return False
+
+        clean = self._clean_markup_text(section_name).upper()
+        return clean in {
+            "TITULOS PRIVADOS LOCALES",
+            "TIT.PRIVADOS EXENTOS",
+            "TIT.PRIVADOS DEL EXTERIOR",
+            "RENTA FIJA EN PESOS",
+            "RENTA FIJA EN DOLARES",
+            "RENTA FIJA EN DÓLARES",
+            "CASH",
+        }
+
+    def _position_category_row(self, section_name: str, width: int) -> list[str]:
+        row = [""] * max(width, 1)
+        row[0] = f"<b>{self._clean_markup_text(section_name)}</b>"
+        return row
+
+    def _normalize_position_continuation_row(
+        self,
+        cells: list[str],
+        continuation_headers: list[str],
+        current_headers: list[str],
+    ) -> list[str]:
+        """Map Gallo position continuation pages back to the canonical position layout."""
+        if not continuation_headers or not current_headers:
+            return cells
+
+        def norm(value: str) -> str:
+            text = self._clean_markup_text(value).lower()
+            text = text.replace('ó', 'o').replace('í', 'i').replace('á', 'a').replace('é', 'e').replace('ú', 'u')
+            return re.sub(r'\s+', ' ', text).strip()
+
+        source_headers = [norm(header) for header in continuation_headers]
+        target_headers = [norm(header) for header in current_headers]
+
+        # Some Gallo continuation pages print a position table with transaction-like
+        # labels: Especie, Fecha, Operacion, Numero, Cantidad, Precio, Importe,
+        # Costo, Resultado en Pesos, Resultado en USD. For positions, those last
+        # four fields correspond to ARS amount, ARS portfolio %, USD amount and USD %.
+        if {'fecha', 'operacion', 'numero', 'cantidad', 'precio', 'importe'}.issubset(set(source_headers)):
+            mapped = [""] * len(current_headers)
+
+            def source_value(*names: str) -> str:
+                wanted = {norm(name) for name in names}
+                for idx, header in enumerate(source_headers):
+                    if header in wanted and idx < len(cells):
+                        return cells[idx]
+                return ""
+
+            def set_target(target_name: str, value: str, occurrence: int = 1):
+                wanted = norm(target_name)
+                count = 0
+                for idx, header in enumerate(target_headers):
+                    if header == wanted:
+                        count += 1
+                        if count == occurrence:
+                            mapped[idx] = value
+                            return
+
+            set_target('Especie', source_value('Especie'))
+            set_target('Detalle', source_value('Fecha'))
+            set_target('Custodia', source_value('Operacion', 'Operación'))
+            set_target('Cantidad', source_value('Cantidad'))
+            set_target('Precio', source_value('Precio'))
+            set_target('Importe en Pesos', source_value('Importe'))
+            set_target('% de Cartera', source_value('Costo'), occurrence=1)
+            set_target('Importe en Dolares', source_value('Resultado en Pesos'))
+            set_target('% de Cartera', source_value('Resultado en USD'), occurrence=2)
+            return mapped
+
+        return cells
+
     def _get_default_visual_headers(self, section: str) -> list[str]:
         return self.DEFAULT_VISUAL_HEADERS.get(section, []).copy()
 
@@ -276,6 +370,10 @@ class MarkdownTableParser:
         current_rows = []
         current_metadata = {}  # Store metadata like fecha
         in_table = False
+        expect_inline_table_header = False
+        expect_position_continuation_header = False
+        position_continuation_headers = None
+        in_position_continuation = False
         skip_section = False  # Flag to skip INCREMENTOS/DECREMENTOS section
         posicion_count = 0  # Track order of POSICION AL sections (1st=Inicial, 2nd=Final)
         
@@ -307,6 +405,16 @@ class MarkdownTableParser:
                         temp_metadata = {'fecha': fecha_match.group(1)}
                 
                 matched_section = self._match_section(section_name, self.GALLO_SECTIONS, posicion_count)
+
+                if (self._is_gallo_position_section(current_section)
+                        and self._is_gallo_position_category(section_name, matched_section)
+                        and current_headers):
+                    current_rows.append(self._position_category_row(section_name, len(current_headers)))
+                    expect_position_continuation_header = True
+                    position_continuation_headers = None
+                    in_position_continuation = False
+                    skip_section = False
+                    continue
                 
                 if matched_section:
                     # Exit skip mode when we find a valid section
@@ -321,17 +429,62 @@ class MarkdownTableParser:
                     # Set NEW metadata for this section
                     current_metadata = temp_metadata
                     in_table = False
+                    expect_inline_table_header = False
+                    expect_position_continuation_header = False
+                    position_continuation_headers = None
+                    in_position_continuation = False
                 continue
             
             # Skip lines while in skip mode
             if skip_section:
                 continue
+
+            inline_section_name = self._extract_inline_gallo_section_name(line)
+            if inline_section_name:
+                temp_metadata = {}
+                if 'POSICION AL' in inline_section_name.upper():
+                    posicion_count += 1
+                    fecha_match = re.search(r'POSICION AL (\d{2}/\d{2}/\d{2,4})', inline_section_name.upper())
+                    if fecha_match:
+                        temp_metadata = {'fecha': fecha_match.group(1)}
+
+                matched_section = self._match_section(inline_section_name, self.GALLO_SECTIONS, posicion_count)
+                if matched_section:
+                    if current_section and current_headers:
+                        self._save_table(current_section, current_headers, current_rows, current_metadata)
+
+                    current_section = matched_section
+                    current_headers = None
+                    current_rows = []
+                    current_metadata = temp_metadata
+                    in_table = False
+                    expect_inline_table_header = True
+                    expect_position_continuation_header = False
+                    position_continuation_headers = None
+                    in_position_continuation = False
+                    skip_section = False
+                    continue
             
             # Detect table start (line starting with |)
             if line.startswith('|') and current_section:
                 cells = self._parse_table_row(line)
+
+                if expect_position_continuation_header:
+                    if '---' in line:
+                        continue
+                    position_continuation_headers = cells
+                    expect_position_continuation_header = False
+                    in_position_continuation = True
+                    continue
                 
                 if not in_table:
+                    if expect_inline_table_header:
+                        if '---' in line:
+                            continue
+                        current_headers = cells
+                        in_table = True
+                        expect_inline_table_header = False
+                        continue
                     # This is potentially a header row
                     # Check if next line is separator (|---|)
                     if i + 1 < len(lines) and '---' in lines[i + 1]:
@@ -347,6 +500,12 @@ class MarkdownTableParser:
                 if cells and any(c.strip() for c in cells):
                     # Skip rows that are just periods or empty
                     if not all(c.strip() in ['', '.'] for c in cells):
+                        if in_position_continuation and self._is_gallo_position_section(current_section):
+                            cells = self._normalize_position_continuation_row(
+                                cells,
+                                position_continuation_headers or [],
+                                current_headers or [],
+                            )
                         current_rows.append(cells)
         
         # Save last section
@@ -726,8 +885,14 @@ class MarkdownTableParser:
         text_upper = text.upper()
         
         # Special handling for Gallo POSICION sections
-        # First POSICION AL -> Posicion Inicial, Second -> Posicion Final
+        # Prefer the explicit date when available; fall back to order only if needed.
         if "POSICION AL" in text_upper and sections_dict == self.GALLO_SECTIONS:
+            fecha_match = re.search(r'POSICION AL (\d{2}/\d{2}/\d{2,4})', text_upper)
+            if fecha_match:
+                fecha = fecha_match.group(1)
+                if fecha.startswith('01/01'):
+                    return "Posicion Inicial"
+                return "Posicion Final"
             if posicion_count == 1:
                 return "Posicion Inicial"
             else:

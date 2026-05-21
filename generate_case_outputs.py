@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from pdf_converter.convert_with_datalab import convert_pdf_to_excel
 from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
+from pdf_converter.datalab.economic_sanity import add_validation_sheet, validate_workbook
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 
 
@@ -82,8 +84,16 @@ def main() -> int:
         precio_tenencias_path=str(precio_excel),
     )
     wb_formulas, wb_values = merger.merge(output_mode="both")
+    validation_report = validate_workbook(wb_values)
+    add_validation_sheet(wb_values, validation_report)
     wb_formulas.save(merge_formulas)
     wb_values.save(merge_values)
+
+    validation_output = root / f"{args.case_prefix}_Resumen_Impositivo_VALIDATION.json"
+    validation_output.write_text(
+        json.dumps(validation_report.to_dict(), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     exporter = ExcelToPdfExporter(
         str(merge_values),
@@ -100,6 +110,7 @@ def main() -> int:
     print(precio_excel)
     print(merge_formulas)
     print(merge_values)
+    print(validation_output)
     print(pdf_output)
     return 0
 

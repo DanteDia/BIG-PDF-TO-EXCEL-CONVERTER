@@ -1875,23 +1875,19 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
                 resultado_num,
             )
 
-            # Fix invalid rows: cantidad > 0 but importe <= 0
-            if cantidad_num > 0 and importe_num <= 0:
-                if importe_num == 0:
-                    # Use resultado / cantidad as fallback price
-                    precio_tenencia = abs(resultado_num / cantidad_num) if cantidad_num else 0
-                    # Also fix the importe cell to resultado so the sheet is consistent
-                    ws.cell(row, importe_col, value=abs(resultado_num))
-                else:
-                    # Negative importe: flip sign
-                    importe_num = abs(importe_num)
-                    ws.cell(row, importe_col, value=importe_num)
-                    precio_tenencia = importe_num / cantidad_num
+            zero_cost_recovered = cantidad_num > 0 and importe_num < 0
+            if zero_cost_recovered:
+                precio_tenencia = 0
+            elif cantidad_num > 0 and importe_num == 0:
+                # Use resultado / cantidad as fallback price
+                precio_tenencia = abs(resultado_num / cantidad_num) if cantidad_num else 0
+                # Also fix the importe cell to resultado so the sheet is consistent
+                ws.cell(row, importe_col, value=abs(resultado_num))
             else:
                 precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
 
             cod_clean = _clean_codigo(cod)
-            if cod_clean in acciones_exterior_codigos:
+            if cod_clean in acciones_exterior_codigos and not zero_cost_recovered:
                 search_text = f"{ticker} {nombre}".strip().upper()
                 key = _normalize_ratio_key(search_text.split()[0]) if search_text else ""
                 ratio = ratio_cache.get(key)
@@ -1931,22 +1927,19 @@ def process_precio_tenencias_sheet(ws: Worksheet) -> None:
             resultado_num,
         )
 
-        # Fix invalid rows: cantidad > 0 but importe <= 0
-        if cantidad_num > 0 and importe_num <= 0:
-            if importe_num == 0:
-                # Use resultado / cantidad as fallback price
-                precio_tenencia = abs(resultado_num / cantidad_num) if cantidad_num else 0
-                importe_num = abs(resultado_num)
-            else:
-                # Negative importe: flip sign
-                importe_num = abs(importe_num)
-                precio_tenencia = importe_num / cantidad_num
+        zero_cost_recovered = cantidad_num > 0 and importe_num < 0
+        if zero_cost_recovered:
+            precio_tenencia = 0
+        elif cantidad_num > 0 and importe_num == 0:
+            # Use resultado / cantidad as fallback price
+            precio_tenencia = abs(resultado_num / cantidad_num) if cantidad_num else 0
+            importe_num = abs(resultado_num)
         else:
             precio_tenencia = (importe_num / cantidad_num) if cantidad_num else 0
 
         # Ajuste por ratio para Acciones del Exterior (CEDEAR)
         cod_clean = _clean_codigo(cod)
-        if cod_clean in acciones_exterior_codigos:
+        if cod_clean in acciones_exterior_codigos and not zero_cost_recovered:
             search_text = f"{ticker} {nombre}".strip().upper()
             key = _normalize_ratio_key(search_text.split()[0]) if search_text else ""
             ratio = ratio_cache.get(key)

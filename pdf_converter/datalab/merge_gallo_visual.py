@@ -699,6 +699,8 @@ class GalloVisualMerger:
         self._precio_tenencias_by_ticker = {}
         self._precio_tenencias_qty_by_codigo = {}
         self._precio_tenencias_qty_by_ticker = {}
+        self._precio_tenencias_zero_cost_codes = set()
+        self._precio_tenencias_zero_cost_tickers = set()
         self._ratios_cedears_cache = {}
         
         # Load ratio cache first (needed by _build_precio_tenencias_cache)
@@ -829,19 +831,20 @@ class GalloVisualMerger:
 
             # Compute raw price = importe / cantidad
             raw_price = 0
+            cantidad_num = 0
+            zero_cost_recovered = False
             if cantidad is not None and importe is not None:
                 cantidad_num = self._to_float(cantidad)
                 importe_num = self._to_float(importe)
                 resultado_num = self._to_float(resultado) if resultado is not None else 0
-                # Fix invalid rows: cantidad > 0 but importe <= 0
-                if cantidad_num > 0 and importe_num <= 0:
-                    if importe_num == 0:
-                        raw_price = abs(resultado_num / cantidad_num) if cantidad_num else 0
-                    else:
-                        raw_price = abs(importe_num) / cantidad_num
+                if cantidad_num > 0 and importe_num < 0:
+                    raw_price = 0
+                    zero_cost_recovered = True
+                elif cantidad_num > 0 and importe_num == 0:
+                    raw_price = 0
                 elif cantidad_num:
                     raw_price = importe_num / cantidad_num
-            if not raw_price:
+            if not raw_price and not zero_cost_recovered:
                 try:
                     raw_price = float(precio) if precio is not None else 0
                 except Exception:
@@ -852,11 +855,15 @@ class GalloVisualMerger:
                 self._precio_tenencias_by_codigo[codigo_clean] = raw_price
                 if cantidad_num > 0:
                     self._precio_tenencias_qty_by_codigo[codigo_clean] = cantidad_num
+                if zero_cost_recovered:
+                    self._precio_tenencias_zero_cost_codes.add(codigo_clean)
             if ticker:
                 ticker_key = str(ticker).strip().upper()
                 self._precio_tenencias_by_ticker[ticker_key] = raw_price
                 if cantidad_num > 0:
                     self._precio_tenencias_qty_by_ticker[ticker_key] = cantidad_num
+                if zero_cost_recovered:
+                    self._precio_tenencias_zero_cost_tickers.add(ticker_key)
 
     def _normalize_ratio_key(self, val: str) -> str:
         if not val:
@@ -1173,6 +1180,22 @@ class GalloVisualMerger:
 
         return 0
 
+    def _has_zero_cost_precio_tenencia(self, codigo: Optional[str], ticker: str = "") -> bool:
+        if codigo:
+            codigo_clean = self._clean_codigo(str(codigo))
+            if codigo_clean in self._precio_tenencias_zero_cost_codes:
+                return True
+
+        ticker_upper = str(ticker).strip().upper()
+        if ticker_upper:
+            if ticker_upper in self._precio_tenencias_zero_cost_tickers:
+                return True
+            for ticker_var in self._generate_ticker_variations(ticker_upper):
+                if ticker_var in self._precio_tenencias_zero_cost_tickers:
+                    return True
+
+        return False
+
     def _get_cantidad_tenencia_inicial(self, codigo: Optional[str], ticker: str = "") -> float:
         """Obtiene cantidad inicial desde PrecioTenenciasIniciales (por código o ticker)."""
         if codigo:
@@ -1311,12 +1334,16 @@ class GalloVisualMerger:
 
             cantidad = self._to_float(src_ws.cell(row, col_cantidad).value)
             precio_tenencia = self._to_float(src_ws.cell(row, col_precio).value)
-            if cantidad <= 0 or precio_tenencia <= 0:
+            zero_cost_recovered = self._has_zero_cost_precio_tenencia(codigo_clean)
+            if zero_cost_recovered:
+                precio_tenencia = 0
+            if cantidad <= 0 or (precio_tenencia <= 0 and not zero_cost_recovered):
                 continue
 
             ticker = src_ws.cell(row, col_ticker).value if col_ticker else ''
             especie = src_ws.cell(row, col_especie).value if col_especie else ''
-            importe_invertido = abs(self._to_float(src_ws.cell(row, col_importe).value)) if col_importe else 0
+            importe_invertido_raw = self._to_float(src_ws.cell(row, col_importe).value) if col_importe else 0
+            importe_invertido = 0 if zero_cost_recovered else abs(importe_invertido_raw)
             visual_data = self._especies_visual_cache.get(codigo_clean, {})
             ticker = ticker or visual_data.get('ticker') or ''
             especie = especie or visual_data.get('nombre') or ''
@@ -1345,7 +1372,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 12, precio_inicial)
             ws.cell(row_out, 13, '')
             ws.cell(row_out, 14, 'PrecioTenenciasIniciales')
-            ws.cell(row_out, 15, 'Synthetic from PrecioTenenciasIniciales')
+            ws.cell(row_out, 15, 'Costo recuperado en PrecioTenenciasIniciales' if zero_cost_recovered else 'Synthetic from PrecioTenenciasIniciales')
             ws.cell(row_out, 16, precio_tenencia)
             ws.cell(row_out, 17, 0 if is_usd else importe_invertido)
             ws.cell(row_out, 18, 0)
@@ -2060,8 +2087,7 @@ class GalloVisualMerger:
                 else:  # USD
                     costo = cantidad * precio_stock_inicial  # negativo, precio ya nominal y USD
                     neto = self._apply_signed_expense(bruto_usd, gastos_usd, cantidad)
-                # Resultado = IF(Costo<>0, ABS(Neto)-ABS(Costo), 0)
-                resultado = abs(neto) - abs(costo) if costo != 0 else 0
+                resultado = abs(neto) - abs(costo) if (costo != 0 or cantidad_stock_inicial > 0) else 0
             else:  # COMPRA
                 costo = 0
                 if moneda_tipo == "ARS":
@@ -2123,8 +2149,14 @@ class GalloVisualMerger:
             bruto_ref = bruto if moneda_tipo == "ARS" else bruto_usd
             audit_col = 26 if moneda_tipo == "ARS" else 28
             warnings = []
+            recovered_cost_stock = (
+                moneda_tipo == "ARS"
+                and cantidad < 0
+                and cantidad_stock_inicial > 0
+                and self._has_zero_cost_precio_tenencia(cod_instrum)
+            )
             result_guardrail_ratio = self._get_result_guardrail_ratio(resultado, bruto_ref, costo, moneda_tipo)
-            if result_guardrail_ratio > 0.8:
+            if result_guardrail_ratio > 0.8 and not (recovered_cost_stock and result_guardrail_ratio <= 1.000001):
                 if moneda_tipo == "USD":
                     warnings.append('RESULTADO/COSTO>0.8')
                 else:
@@ -2134,7 +2166,7 @@ class GalloVisualMerger:
                 stock_abs = abs(precio_stock_inicial)
                 min_price = min(current_abs, stock_abs)
                 max_price = max(current_abs, stock_abs)
-                if min_price > 0 and (max_price / min_price) > 20:
+                if min_price > 0 and (max_price / min_price) > 20 and not recovered_cost_stock:
                     warnings.append('ESCALA_PRECIO_STOCK')
             if guardrail_stock_price:
                 warnings.append('STOCK_PRICE_GUARDRAIL')
@@ -2226,6 +2258,9 @@ class GalloVisualMerger:
         
         # No encontrado en Posicion - usar PrecioTenenciasIniciales si está disponible
         precio_tenencia = self._precio_tenencias_by_codigo.get(cod_instrum, 0)
+        if self._has_zero_cost_precio_tenencia(cod_instrum):
+            cantidad_tenencia = self._get_cantidad_tenencia_inicial(cod_instrum)
+            return (cantidad_tenencia, 0.0)
         if precio_tenencia:
             precio_nominal = self._to_float(precio_tenencia)
             if for_usd:
@@ -2466,6 +2501,9 @@ class GalloVisualMerger:
             if self._position_price_is_already_usd(codigo_clean) and precio_usd > 0:
                 precio_a_utilizar = precio_usd
                 origen_precio = "PosicionInicialUSD"
+            elif self._has_zero_cost_precio_tenencia(codigo, ticker):
+                precio_a_utilizar = 0
+                origen_precio = "PrecioTenenciasCostoRecuperado"
             elif precio_tenencia > 0:
                 precio_a_utilizar = precio_tenencia
                 origen_precio = "PrecioTenenciasIniciales"
@@ -4056,7 +4094,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 20, f'=K{row_out}+L{row_out}')
             
             # Col U: Resultado Calculado = |Neto| - |Costo|
-            ws.cell(row_out, 21, f'=SI(S{row_out}<>0;ABS(T{row_out})-ABS(S{row_out});0)')
+            ws.cell(row_out, 21, f'=SI(I{row_out}<0;SI(O(S{row_out}<>0;Q{row_out}>0);ABS(T{row_out})-ABS(S{row_out});0);0)')
             
             # Col V: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 22, f'=I{row_out}+Q{row_out}')
@@ -4339,7 +4377,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 23, f'=SI(I{row_out}<0;M{row_out}-Q{row_out};M{row_out}+Q{row_out})')
             
             # Col X: Resultado Calculado = |Neto| - |Costo|
-            ws.cell(row_out, 24, f'=SI(V{row_out}<>0;ABS(W{row_out})-ABS(V{row_out});0)')
+            ws.cell(row_out, 24, f'=SI(I{row_out}<0;SI(O(V{row_out}<>0;T{row_out}>0);ABS(W{row_out})-ABS(V{row_out});0);0)')
             
             # Col Y: Cantidad Stock Final = Cantidad + Stock Inicial
             ws.cell(row_out, 25, f'=I{row_out}+T{row_out}')
@@ -5186,7 +5224,7 @@ class GalloVisualMerger:
             importe = self._to_float(ws_src.cell(row, col_importe).value) if col_importe else 0
 
             # Raw price = importe / cantidad
-            raw_price = (importe / cantidad) if cantidad else 0
+            raw_price = 0 if cantidad > 0 and importe < 0 else ((importe / cantidad) if cantidad else 0)
 
             # Ratio: real CEDEAR ratio for acciones del exterior, 1 for everything else
             ratio = 1

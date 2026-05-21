@@ -36,6 +36,7 @@ from pdf_converter.datalab.md_to_excel import convert_markdown_to_excel
 from pdf_converter.datalab.postprocess import postprocess_gallo_workbook, postprocess_visual_workbook
 from pdf_converter.datalab.merge_gallo_visual import GalloVisualMerger
 from pdf_converter.datalab.excel_to_pdf import ExcelToPdfExporter
+from pdf_converter.datalab.economic_sanity import add_validation_sheet, validate_workbook
 from pdf_converter.datalab import excel_to_pdf as excel_to_pdf_module
 from pdf_converter.datalab.datalab_excel_reader import DatalabExcelReader
 from openpyxl import load_workbook
@@ -196,6 +197,30 @@ def resolve_merge_client_info(results: dict) -> tuple[str, str]:
     return comitente_num, comitente_name
 
 
+def render_validation_panel(report: dict | None) -> None:
+    """Muestra los triggers economicos detectados en el Excel interno."""
+    if not report:
+        return
+    issue_count = report.get('issue_count', 0)
+    counts = report.get('counts_by_severity', {}) or {}
+    if issue_count == 0:
+        st.success("✅ Validación económica: no se detectaron triggers de revisión.")
+        return
+
+    high_count = counts.get('high', 0)
+    review_count = counts.get('review', 0)
+    if high_count:
+        st.error(f"⚠️ Validación económica: {high_count} trigger(s) de alta severidad y {review_count} de revisión. Revisar antes de enviar al cliente.")
+    else:
+        st.warning(f"⚠️ Validación económica: {review_count} trigger(s) de revisión detectados.")
+
+    issues = report.get('issues', [])[:50]
+    if issues:
+        df = pd.DataFrame(issues)
+        visible_cols = ['severity', 'rule_id', 'sheet', 'row', 'metric', 'value', 'message', 'suggested_review']
+        st.dataframe(df[[col for col in visible_cols if col in df.columns]], use_container_width=True, hide_index=True)
+
+
 # File uploaders
 col1, col2, col3 = st.columns(3)
 
@@ -343,6 +368,8 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                             precio_tenencias_path=precio_tenencias_temp if 'precio_tenencias' in results else None
                         )
                         wb_formulas, wb_values = merger.merge(output_mode="both")
+                        validation_report = validate_workbook(wb_values)
+                        add_validation_sheet(wb_values, validation_report)
                         
                         # Save both versions
                         merged_excel_path = os.path.join(temp_dir, "merged_resumen.xlsx")
@@ -364,6 +391,7 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                         
                         # Store values workbook in session for PDF generation
                         st.session_state.merged_values_wb = wb_values
+                        results['validation_report'] = validation_report.to_dict()
                         
                         status_text.text("✅ Resumen Impositivo generado!")
                     
@@ -459,6 +487,7 @@ if st.session_state.processed_files is not None:
     if 'merged' in st.session_state.processed_files:
         st.markdown("---")
         st.markdown("### 📊 Resumen Impositivo Anual")
+        render_validation_panel(st.session_state.processed_files.get('validation_report'))
         st.markdown("""
         <div class="success-box">
             <p>El <strong>Resumen Impositivo</strong> combina datos de Gallo y Visual con:</p>

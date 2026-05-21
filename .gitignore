@@ -43,6 +43,7 @@ TEST_*.xlsx
 
 # Logs
 *.log
+LOCAL_RELEASE_AUDIT*.json
 
 # Temporary files
 tmp/
