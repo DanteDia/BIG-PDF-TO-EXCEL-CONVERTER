@@ -65,6 +65,27 @@ cases:
       - "GLOBANT ARS sale on 30/06/2025 used generic initial price 13900 before this fix; dated Gallo snapshot 31/05/25 supports 880 units at 6560."
       - "Under review until regenerated values/PDF are checked after the dated snapshot fallback."
 
+  flores_gabriel_10946:
+    client: "Flores Gabriel"
+    comitente: "10946"
+    status: under-review
+    handoff: CASE_HANDOFFS/FLORES_GABRIEL_10946.md
+    local_outputs:
+      folder: LOCAL_VERIFY_10946_20260522
+      values: LOCAL_VERIFY_10946_20260522/FLORES_GABRIEL_10946_AFTERFIX_Resumen_Impositivo_FIXED_values.xlsx
+      formulas: LOCAL_VERIFY_10946_20260522/FLORES_GABRIEL_10946_AFTERFIX_Resumen_Impositivo_FIXED_formulas.xlsx
+      pdf: LOCAL_VERIFY_10946_20260522/FLORES_GABRIEL_10946_AFTERFIX_Resumen_Impositivo_FIXED.pdf
+    latest_audit:
+      path: LOCAL_VERIFY_10946_20260522/FLORES_GABRIEL_10946_AFTERFIX_Resumen_Impositivo_VALIDATION.json
+      target: LOCAL_VERIFY_10946_20260522/FLORES_GABRIEL_10946_AFTERFIX_Resumen_Impositivo_FIXED_values.xlsx
+      high: 0
+      review: 0
+    findings:
+      - FLO10946-USD-EXTERIOR-AUX-PRICE-001
+    notes:
+      - "AAPL-US rows 43-49 had six RES-USD-RATIO-001 high triggers because PreciosIniciales fallback was divided by FX."
+      - "After fix, regenerated values workbook has issue_count=0 and AAPL stock price around 243.78 USD."
+
   approved_smoke_suite:
     client: "Approved smoke baselines"
     comitente: null

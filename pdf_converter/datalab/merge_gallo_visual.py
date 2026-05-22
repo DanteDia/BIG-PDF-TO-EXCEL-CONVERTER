@@ -2330,9 +2330,9 @@ class GalloVisualMerger:
                 precio_nominal = precio_bruto / 100
             else:
                 precio_nominal = precio_bruto
-            # Para USD: convertir a USD usando cotización del inicio del período
-            # (PreciosInicialesEspecies tiene precios al 31/12/2024)
-            if for_usd:
+            # Para USD: convertir a USD usando cotización del inicio del período,
+            # salvo acciones del exterior cuyo precio auxiliar ya está en USD.
+            if for_usd and not self._position_price_is_already_usd(cod_instrum):
                 precio_nominal = precio_nominal / self.COTIZACION_INICIO_PERIODO
             # Retornar cantidad=0 (no hay stock previo) pero con precio de referencia
             return (0.0, precio_nominal)
