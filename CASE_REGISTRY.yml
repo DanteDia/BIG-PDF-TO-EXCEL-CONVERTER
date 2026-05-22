@@ -2,7 +2,7 @@
 # Keep this compact. Detailed fiscal evidence belongs in CASE_FINDINGS_INDEX.md.
 
 schema_version: 1
-last_updated: 2026-05-21
+last_updated: 2026-05-22
 
 cases:
   cicero_10537:
@@ -49,6 +49,21 @@ cases:
       - DEL-LEGACY-NORMALIZED-UNIFICATION-001
     notes:
       - "User confirmed Del Rio is an approved smoke. Promote to blocking smoke suite when hardening releases."
+
+  flores_13645:
+    client: "Flores Oscar Anibal"
+    comitente: "13645"
+    status: under-review
+    handoff: CASE_HANDOFFS/FLORES_13645.md
+    local_outputs:
+      folder: ejemplo flores 13645
+      formulas: ejemplo flores 13645/13645_FLORES_OSCAR_ANIBAL_Resumen_Impositivo_20260521_1754_formulas.xlsx
+      pdf: ejemplo flores 13645/13645_FLORES_OSCAR_ANIBAL_Resumen_Impositivo_20260521_1754.pdf
+    findings:
+      - FLO-GALLO-INTERMEDIATE-POSITION-001
+    notes:
+      - "GLOBANT ARS sale on 30/06/2025 used generic initial price 13900 before this fix; dated Gallo snapshot 31/05/25 supports 880 units at 6560."
+      - "Under review until regenerated values/PDF are checked after the dated snapshot fallback."
 
   approved_smoke_suite:
     client: "Approved smoke baselines"

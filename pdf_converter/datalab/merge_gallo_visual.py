@@ -682,6 +682,7 @@ class GalloVisualMerger:
         self.gallo_wb = load_workbook(gallo_path) if gallo_path else self._create_empty_gallo_workbook()
         self.visual_wb = load_workbook(visual_path)
         self.precio_tenencias_wb = load_workbook(precio_tenencias_path) if precio_tenencias_path else None
+        self._gallo_position_dates = self._load_gallo_position_dates()
         
         # Cargar hojas auxiliares
         self.especies_visual = self._load_aux('EspeciesVisual.xlsx')
@@ -708,6 +709,43 @@ class GalloVisualMerger:
         
         # Construir caches
         self._build_caches()
+
+    def _load_gallo_position_dates(self) -> Dict[str, date]:
+        dates: Dict[str, date] = {}
+        for sheet_name in ("Posicion Inicial", "Posicion Final"):
+            if sheet_name not in self.gallo_wb.sheetnames:
+                continue
+            ws = self.gallo_wb[sheet_name]
+            metadata_col = self._find_header_column(ws, ["__position_date", "fecha posicion", "fecha posición"])
+            if not metadata_col:
+                continue
+            for row in range(2, ws.max_row + 1):
+                parsed = self._parse_date_value(ws.cell(row, metadata_col).value)
+                if parsed:
+                    dates[sheet_name] = parsed
+                    break
+        return dates
+
+    def _parse_date_value(self, value) -> Optional[date]:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if value is None:
+            return None
+        text = str(value).strip()
+        match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{2,4})', text)
+        if not match:
+            return None
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year = int(match.group(3))
+        if year < 100:
+            year += 2000
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
 
     def _create_empty_gallo_workbook(self) -> Workbook:
         """Crea un workbook Gallo vacío para flujos Visual-only."""
@@ -2056,7 +2094,14 @@ class GalloVisualMerger:
                 # que ya está dividido por 100 para ON/TP/Letras
                 # Para USD, pasamos for_usd=True para que el fallback ya venga en USD
                 is_usd_sheet = (moneda_tipo == "USD")
-                stock_cantidad, stock_precio = self._get_posicion_inicial(wb, cod_instrum, is_gallo, for_usd=is_usd_sheet)
+                operation_date = self._parse_date_value(ws.cell(row, 5).value)
+                stock_cantidad, stock_precio = self._get_posicion_inicial(
+                    wb,
+                    cod_instrum,
+                    is_gallo,
+                    for_usd=is_usd_sheet,
+                    operation_date=operation_date,
+                )
                 
                 # Para USD: convertir precio de posición a USD SOLO si todavía está en ARS.
                 # Las acciones del exterior ya traen precio unitario en USD desde Posición Gallo.
@@ -2215,7 +2260,14 @@ class GalloVisualMerger:
     # Cotización del dólar MEP al inicio del período (31/12/2024)
     COTIZACION_INICIO_PERIODO = 1167.806
     
-    def _get_posicion_inicial(self, wb: Workbook, cod_instrum: str, is_gallo: bool, for_usd: bool = False) -> Tuple[float, float]:
+    def _get_posicion_inicial(
+        self,
+        wb: Workbook,
+        cod_instrum: str,
+        is_gallo: bool,
+        for_usd: bool = False,
+        operation_date: Optional[date] = None,
+    ) -> Tuple[float, float]:
         """
         Obtiene (cantidad, precio_nominal) de la hoja de posición correspondiente.
         
@@ -2234,15 +2286,11 @@ class GalloVisualMerger:
         para ON, Títulos Públicos y Letras del Tesoro.
         Col U=21 es Tipo Instrumento (VLOOKUP a EspeciesVisual).
         """
-        # Para cálculos de Resultado Ventas, siempre usar Posicion Inicial Gallo si existe
-        pos_sheet = 'Posicion Inicial Gallo' if 'Posicion Inicial Gallo' in wb.sheetnames else (
-            'Posicion Final Gallo' if 'Posicion Final Gallo' in wb.sheetnames else None
-        )
+        # Para cálculos de Resultado Ventas, la base fuerte es solo Posicion Inicial.
+        # Posicion Final se usa más abajo únicamente como snapshot fechado previo a la operación.
+        pos_sheet = 'Posicion Inicial Gallo' if 'Posicion Inicial Gallo' in wb.sheetnames else None
 
-        if not pos_sheet:
-            return (0.0, 0.0)
-        
-        if pos_sheet in wb.sheetnames:
+        if pos_sheet and pos_sheet in wb.sheetnames:
             pos_ws = wb[pos_sheet]
             for r in range(2, pos_ws.max_row + 1):
                 pos_cod = pos_ws.cell(r, 4).value  # Col D = Codigo especie
@@ -2267,6 +2315,10 @@ class GalloVisualMerger:
                 precio_nominal = precio_nominal / self.COTIZACION_INICIO_PERIODO
             return (0.0, precio_nominal)
 
+        intermediate_position = self._get_dated_intermediate_position(wb, cod_instrum, operation_date, for_usd)
+        if intermediate_position:
+            return intermediate_position
+
         # Si no está, buscar en PreciosInicialesEspecies como fallback
         # Esto cubre el caso de instrumentos que se venden sin haber estado en posicion
         precio_data = self._precios_iniciales_by_codigo.get(cod_instrum, {})
@@ -2287,6 +2339,46 @@ class GalloVisualMerger:
         
         # No encontrado en ningún lado - retornar 0, 0
         return (0.0, 0.0)
+
+    def _get_dated_intermediate_position(
+        self,
+        wb: Workbook,
+        cod_instrum: str,
+        operation_date: Optional[date],
+        for_usd: bool = False,
+    ) -> Optional[Tuple[float, float]]:
+        if for_usd or not operation_date:
+            return None
+        snapshot_date = getattr(self, "_gallo_position_dates", {}).get("Posicion Final")
+        if not snapshot_date or snapshot_date >= operation_date:
+            return None
+        if "Posicion Final Gallo" not in wb.sheetnames:
+            return None
+
+        pos_ws = wb["Posicion Final Gallo"]
+        for row in range(2, pos_ws.max_row + 1):
+            pos_cod = pos_ws.cell(row, 4).value
+            if not pos_cod or self._clean_codigo(str(pos_cod)) != cod_instrum:
+                continue
+            cantidad = self._to_float(pos_ws.cell(row, 9).value)
+            if cantidad <= 0:
+                return None
+            tipo_instrumento = str(pos_ws.cell(row, 21).value or self._vlookup_especies_visual(cod_instrum, 16) or "")
+            tipo_lower = tipo_instrumento.lower()
+            if "cedear" not in tipo_lower and "accion" not in tipo_lower:
+                return None
+            precio_posicion = self._to_float(pos_ws.cell(row, 10).value)
+            if precio_posicion <= 0:
+                precio_posicion = self._to_float(pos_ws.cell(row, 16).value)
+            if precio_posicion <= 0:
+                return None
+            precio_nominal = self._normalize_initial_cost_price(
+                precio_posicion,
+                tipo_instrumento,
+                "PosicionFinalIntermedia",
+            )
+            return (cantidad, precio_nominal)
+        return None
 
     def _compute_synthetic_initial_positions(self) -> dict:
         """Compute initial positions from ALL pre-2025 historical operations in Gallo.

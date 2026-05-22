@@ -79,12 +79,15 @@ def test_gallo_position_continuation_category_stays_in_initial_position(tmp_path
     wb = load_workbook(output_path, data_only=True)
 
     inicial = wb["Posicion Inicial"]
+    metadata_col = inicial.max_column
     vtrs_row = None
     for row in inicial.iter_rows(min_row=2, values_only=True):
         if row[1] == "VTRS-US VIATRIS INC":
             vtrs_row = row
             break
 
+    assert inicial.cell(1, metadata_col).value == "__position_date"
+    assert inicial.cell(2, metadata_col).value == "01/01/25"
     assert vtrs_row is not None
     assert vtrs_row[0] == "TIT.PRIVADOS DEL EXTERIOR"
     assert vtrs_row[4] == 7

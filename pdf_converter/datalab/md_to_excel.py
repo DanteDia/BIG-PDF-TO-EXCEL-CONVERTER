@@ -976,6 +976,9 @@ class ExcelExporter:
     def add_table(self, table: TableData):
         """Add a table as a new worksheet."""
         ws = self.wb.create_sheet(title=table.section[:31])  # Excel sheet name limit
+        metadata_col = None
+        if table.section in {"Posicion Inicial", "Posicion Final"} and table.metadata.get("fecha"):
+            metadata_col = len(table.headers) + 1
         
         # Write headers
         for col, header in enumerate(table.headers, 1):
@@ -984,6 +987,14 @@ class ExcelExporter:
             cell.fill = self.header_fill
             cell.alignment = self.header_alignment
             cell.border = self.border
+
+        if metadata_col:
+            cell = ws.cell(row=1, column=metadata_col, value="__position_date")
+            cell.font = self.header_font
+            cell.fill = self.header_fill
+            cell.alignment = self.header_alignment
+            cell.border = self.border
+            ws.column_dimensions[cell.column_letter].hidden = True
         
         # Write data rows
         for row_idx, row_data in enumerate(table.rows, 2):
@@ -994,6 +1005,8 @@ class ExcelExporter:
                 # Right-align numeric values
                 if self._is_numeric(value):
                     cell.alignment = Alignment(horizontal="right")
+            if metadata_col:
+                ws.cell(row=row_idx, column=metadata_col, value=table.metadata.get("fecha"))
         
         # Auto-width columns
         self._auto_width(ws, table.headers)
