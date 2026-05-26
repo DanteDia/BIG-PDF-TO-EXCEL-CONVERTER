@@ -303,7 +303,16 @@ class MarkdownTableParser:
     def _detect_format(self) -> str:
         """Detect if this is Gallo or Visual format."""
         content_upper = self.content.upper()
-        if "BOLETOS" in content_upper or "RESULTADO VENTAS" in content_upper or "PRECIO TENENCIAS" in content_upper:
+        visual_markers = [
+            "REPORTE DE GANANCIAS",
+            "BOLETOS",
+            "RESULTADO VENTAS",
+            "RENTAS Y DIVIDENDOS",
+            "POSICIÓN DE TÍTULOS",
+            "POSICION DE TITULOS",
+            "PRECIO TENENCIAS",
+        ]
+        if any(marker in content_upper for marker in visual_markers):
             return "visual"
         return "gallo"
     

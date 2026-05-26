@@ -2,7 +2,7 @@
 # Keep this compact. Detailed fiscal evidence belongs in CASE_FINDINGS_INDEX.md.
 
 schema_version: 1
-last_updated: 2026-05-22
+last_updated: 2026-05-26
 
 cases:
   cicero_10537:
@@ -85,6 +85,27 @@ cases:
     notes:
       - "AAPL-US rows 43-49 had six RES-USD-RATIO-001 high triggers because PreciosIniciales fallback was divided by FX."
       - "After fix, regenerated values workbook has issue_count=0 and AAPL stock price around 243.78 USD."
+
+  szychowski_13969:
+    client: "Szychowski Maria Ines"
+    comitente: "13969"
+    status: under-review
+    handoff: CASE_HANDOFFS/SZYCHOWSKI_13969.md
+    local_outputs:
+      folder: LOCAL_VERIFY_13969_20260526
+      values: LOCAL_VERIFY_13969_20260526/SZYCHOWSKI_13969_AFTERFIX_Resumen_Impositivo_FIXED_values.xlsx
+      formulas: LOCAL_VERIFY_13969_20260526/SZYCHOWSKI_13969_AFTERFIX_Resumen_Impositivo_FIXED_formulas.xlsx
+      pdf: LOCAL_VERIFY_13969_20260526/SZYCHOWSKI_13969_AFTERFIX_Resumen_Impositivo_FIXED.pdf
+    latest_audit:
+      path: LOCAL_VERIFY_13969_20260526/SZYCHOWSKI_13969_AFTERFIX_Resumen_Impositivo_VALIDATION.json
+      target: LOCAL_VERIFY_13969_20260526/SZYCHOWSKI_13969_AFTERFIX_Resumen_Impositivo_FIXED_values.xlsx
+      high: 0
+      review: 0
+    findings:
+      - SZY-VISUAL-RENTAS-ONLY-001
+    notes:
+      - "Broken final PDF only showed Gallo January rentas; Bolsa Visual-only rentas report was misdetected as Gallo and dropped."
+      - "After fix, USD rentas total is 60.20: Gallo 27.65 + 3.32 and Bolsa 25.77 + 3.46."
 
   approved_smoke_suite:
     client: "Approved smoke baselines"

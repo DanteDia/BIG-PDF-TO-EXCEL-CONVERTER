@@ -4553,17 +4553,22 @@ class GalloVisualMerger:
             gastos_orig = rentas_ws.cell(rentas_row, 15).value or 0  # Col O
             gastos = (costo if isinstance(costo, (int, float)) else 0) + (gastos_orig if isinstance(gastos_orig, (int, float)) else 0)
             
-            # Importe = Resultado (M) - Gastos (O) - Costo (P) como valor, no fórmula
+            origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+
+            # Importe = Resultado (M) - Gastos (O) - Costo (P) como valor, no fórmula.
+            # Visual Rentas/Dividendos already publishes the final Importe; do not
+            # subtract its source Gastos a second time.
             resultado = rentas_ws.cell(rentas_row, 13).value or 0  # Col M = Resultado
-            if isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
+            if self._is_visual_origin(origen):
+                importe = resultado if isinstance(resultado, (int, float)) else 0
+            elif isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
                 importe = resultado - gastos_orig - (costo if isinstance(costo, (int, float)) else 0)
             else:
                 importe = 0
             # Amortizaciones no afectan el resumen anual
             if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
                 importe = 0
-            
-            origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+
             if moneda_emision and self._classify_rentas_currency(moneda, moneda_emision, origen) == 'ARS' and 'dolar' in str(moneda_emision).lower():
                 origen = f"{origen} | ALERTA: MONEDA_EFECTIVA_ARS"
             
@@ -4702,17 +4707,22 @@ class GalloVisualMerger:
             gastos_orig = rentas_ws.cell(rentas_row, 15).value or 0  # Col O
             gastos = (costo if isinstance(costo, (int, float)) else 0) + (gastos_orig if isinstance(gastos_orig, (int, float)) else 0)
             
-            # Importe = Resultado (M) - Gastos (O) - Costo (P) como valor, no fórmula
+            origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+
+            # Importe = Resultado (M) - Gastos (O) - Costo (P) como valor, no fórmula.
+            # Visual Rentas/Dividendos already publishes the final Importe; do not
+            # subtract its source Gastos a second time.
             resultado = rentas_ws.cell(rentas_row, 13).value or 0  # Col M = Resultado
-            if isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
+            if self._is_visual_origin(origen):
+                importe = resultado if isinstance(resultado, (int, float)) else 0
+            elif isinstance(resultado, (int, float)) and isinstance(gastos_orig, (int, float)):
                 importe = resultado - gastos_orig - (costo if isinstance(costo, (int, float)) else 0)
             else:
                 importe = 0
             # Amortizaciones no afectan el resumen anual
             if tipo_op_upper in ["AMORTIZACION", "AMORTIZACIÓN"]:
                 importe = 0
-            
-            origen = rentas_ws.cell(rentas_row, 18).value  # Col R
+
             if moneda and ('peso' in str(moneda).lower()):
                 origen = f"{origen} | ALERTA: MONEDA_EFECTIVA_PESOS_EN_USD"
             
