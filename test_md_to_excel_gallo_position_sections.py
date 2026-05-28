@@ -94,3 +94,42 @@ def test_gallo_position_continuation_category_stays_in_initial_position(tmp_path
     assert vtrs_row[5] == 12.45
     assert vtrs_row[6] == 101774.25
     assert vtrs_row[8] == 87.15
+
+
+def test_gallo_position_skips_embedded_page_metadata_rows():
+    markdown = textwrap.dedent(
+        """
+        Industrial Valores S.A.
+
+        ### POSICION AL 01/01/25
+
+        | Especie | Detalle | Custodia | Cantidad | Precio | Importe en Pesos | % de Cartera | Importe en Dolares | % de Cartera |
+        |---|---|---|---|---|---|---|---|---|
+        | CASH | | | | | | | | |
+        | DOLARES | Cuenta Corriente | | 20,232.92 | 1167.806 | 23,628,115.64 | 8.12 | 20,232.92 | 8.12 |
+        | | TOTAL POSICION AL 01/01/25 | | | | 23,628,115.64 | | 20,232.92 | |
+
+        {10}------------------------------------------------
+
+        | | | | | | |
+        |---|---|---|---|---|---|
+        | Comitente: 10017 PADOVA JAVIER | | | Fecha: 27/05/26 | | |
+        | Desde Fecha: 01/01/25 | | Hasta Fecha: 31/05/25 | | Hoja: 11 | |
+
+        ## INCREMENTOS/DECREMENTOS DE LA INVERSION
+
+        | Fecha Liq. | Comprobante | Numero | Detalle | Especie | Cantidad |
+        |---|---|---|---|---|---|
+        | 13/03/25 | PAGO USD | 1531 | | DLR-MEP DOLARES | |
+        """
+    )
+
+    parser = MarkdownTableParser(markdown)
+    tables = parser.parse()
+    inicial = tables["Posicion Inicial"]
+
+    flattened_rows = [" ".join(str(cell) for cell in row if cell) for row in inicial.rows]
+    assert any("DOLARES" in row for row in flattened_rows)
+    assert not any("Fecha: 27/05/26" in row for row in flattened_rows)
+    assert not any("Comitente: 10017" in row for row in flattened_rows)
+    assert not any("Hasta Fecha" in row for row in flattened_rows)

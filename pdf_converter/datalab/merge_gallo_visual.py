@@ -559,6 +559,17 @@ class GalloVisualMerger:
         """Indica si el precio de posición ya está expresado en USD unitarios."""
         return self._is_accion_exterior(cod_instrum)
 
+    def _usd_stock_price_needs_fx_conversion(self, stock_price, tipo_instrumento: str, cod_instrum: str = "") -> bool:
+        """Indica si una posición inicial debe convertirse de ARS a USD para Resultado Ventas USD."""
+        if self._position_price_is_already_usd(cod_instrum):
+            return False
+
+        stock_price_num = abs(self._to_float(stock_price))
+        if self._es_tipo_precio_cada_100(tipo_instrumento) and 0 < stock_price_num < 2:
+            return False
+
+        return True
+
     def _resolve_usd_stock_price(self, raw_price, nominal_price, tipo_instrumento: str, cod_instrum: str = "") -> float:
         """Normaliza el precio de stock inicial USD usando reglas y fallbacks de seguridad."""
         stock_price = self._to_float(raw_price)
@@ -584,7 +595,7 @@ class GalloVisualMerger:
             return 0.0
 
         origen_precio_text = str(origen_precio or "").strip().lower()
-        if origen_precio_text == 'preciotenenciasiniciales':
+        if origen_precio_text in {'preciotenenciasiniciales', 'posicioninicialusd'}:
             return price_num
 
         return self._normalize_nominal_price(price_num, tipo_instrumento)
@@ -2105,7 +2116,8 @@ class GalloVisualMerger:
                 
                 # Para USD: convertir precio de posición a USD SOLO si todavía está en ARS.
                 # Las acciones del exterior ya traen precio unitario en USD desde Posición Gallo.
-                if is_usd_sheet and stock_cantidad > 0 and valor_usd_dia > 0 and not self._position_price_is_already_usd(cod_instrum):
+                if (is_usd_sheet and stock_cantidad > 0 and valor_usd_dia > 0
+                    and self._usd_stock_price_needs_fx_conversion(stock_precio, tipo_instrumento, cod_instrum)):
                     stock_precio = stock_precio / valor_usd_dia
                 # Nota: si stock_cantidad == 0, el precio ya viene en USD (del fallback)
 
@@ -2586,11 +2598,12 @@ class GalloVisualMerger:
                 cotizacion_usd = 1148.93  # Dólar Cable 31/12/2024
                 precio_inicial = precio_inicial * cotizacion_usd
             
-            # Para acciones del exterior, la posición Gallo ya trae el precio unitario en USD.
+            # Algunas posiciones USD Gallo ya traen el precio unitario en USD.
             # Priorizar ese valor evita mezclar una base en pesos de PrecioTenencias con ventas USD.
             codigo_clean = self._clean_codigo(codigo) if codigo else ''
             precio_tenencia = self._get_precio_tenencia_inicial(codigo, ticker)
-            if self._position_price_is_already_usd(codigo_clean) and precio_usd > 0:
+            if (precio_usd > 0
+                    and (self._position_price_is_already_usd(codigo_clean) or es_renta_fija_usd)):
                 precio_a_utilizar = precio_usd
                 origen_precio = "PosicionInicialUSD"
             elif self._has_zero_cost_precio_tenencia(codigo, ticker):

@@ -264,6 +264,20 @@ class MarkdownTableParser:
 
         return cells
 
+    def _is_gallo_report_metadata_row(self, cells: list[str]) -> bool:
+        """Detect page header/footer rows that Datalab can inject inside Gallo tables."""
+        metadata_prefixes = (
+            'comitente:',
+            'fecha:',
+            'desde fecha:',
+            'hasta fecha:',
+            'hoja:',
+        )
+        non_empty = [self._clean_markup_text(cell).lower() for cell in cells if self._clean_markup_text(cell)]
+        if not non_empty:
+            return False
+        return all(any(text.startswith(prefix) for prefix in metadata_prefixes) for text in non_empty)
+
     def _get_default_visual_headers(self, section: str) -> list[str]:
         return self.DEFAULT_VISUAL_HEADERS.get(section, []).copy()
 
@@ -507,6 +521,8 @@ class MarkdownTableParser:
                 
                 # This is a data row
                 if cells and any(c.strip() for c in cells):
+                    if self._is_gallo_report_metadata_row(cells):
+                        continue
                     # Skip rows that are just periods or empty
                     if not all(c.strip() in ['', '.'] for c in cells):
                         if in_position_continuation and self._is_gallo_position_section(current_section):

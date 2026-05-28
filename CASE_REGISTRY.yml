@@ -2,7 +2,7 @@
 # Keep this compact. Detailed fiscal evidence belongs in CASE_FINDINGS_INDEX.md.
 
 schema_version: 1
-last_updated: 2026-05-26
+last_updated: 2026-05-27
 
 cases:
   cicero_10537:
@@ -106,6 +106,28 @@ cases:
     notes:
       - "Broken final PDF only showed Gallo January rentas; Bolsa Visual-only rentas report was misdetected as Gallo and dropped."
       - "After fix, USD rentas total is 60.20: Gallo 27.65 + 3.32 and Bolsa 25.77 + 3.46."
+
+  padova_10017:
+    client: "Padova Javier"
+    comitente: "10017"
+    status: under-review
+    handoff: CASE_HANDOFFS/PADOVA_10017.md
+    local_outputs:
+      folder: LOCAL_VERIFY_10017_20260527
+      values: LOCAL_VERIFY_10017_20260527/COMITENTE_10017_RECHECK_Resumen_Impositivo_FIXED_values.xlsx
+      formulas: LOCAL_VERIFY_10017_20260527/COMITENTE_10017_RECHECK_Resumen_Impositivo_FIXED_formulas.xlsx
+      pdf: LOCAL_VERIFY_10017_20260527/COMITENTE_10017_RECHECK_Resumen_Impositivo_FIXED.pdf
+    latest_audit:
+      path: LOCAL_VERIFY_10017_20260527/COMITENTE_10017_RECHECK_Resumen_Impositivo_VALIDATION.json
+      target: LOCAL_VERIFY_10017_20260527/COMITENTE_10017_RECHECK_Resumen_Impositivo_FIXED_values.xlsx
+      high: 0
+      review: 0
+    findings:
+      - PAD10017-GALLO-PAGE-METADATA-001
+      - PAD10017-USD-FIXED-INCOME-POSITION-001
+    notes:
+      - "Web crash was caused by Gallo page metadata parsed as fake position rows, including `Fecha: 27/05/26` in a numeric path."
+      - "After fixes, full generation completes, PDF renders 18 pages, and economic validation has issue_count=0."
 
   approved_smoke_suite:
     client: "Approved smoke baselines"
