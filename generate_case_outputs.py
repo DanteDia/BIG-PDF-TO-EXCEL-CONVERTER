@@ -46,10 +46,14 @@ def main() -> int:
 
     visual_excel = visual_xlsx or (root / f"{args.case_prefix}_Visual_from_PDF.xlsx")
     gallo_excel = gallo_xlsx or (root / f"{args.case_prefix}_Gallo_from_PDF.xlsx")
-    precio_excel = precio_xlsx or (root / f"{args.case_prefix}_PrecioTenencias_from_PDF.xlsx")
+    precio_excel = precio_xlsx or ((root / f"{args.case_prefix}_PrecioTenencias_from_PDF.xlsx") if precio_pdf else None)
     merge_formulas = root / f"{args.case_prefix}_Resumen_Impositivo_FIXED_formulas.xlsx"
     merge_values = root / f"{args.case_prefix}_Resumen_Impositivo_FIXED_values.xlsx"
     pdf_output = root / f"{args.case_prefix}_Resumen_Impositivo_FIXED.pdf"
+
+    for output_path in [visual_excel, gallo_excel, precio_excel, merge_formulas, merge_values, pdf_output]:
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
     missing_inputs = []
     if visual_excel is None or not visual_excel.exists():
@@ -58,22 +62,19 @@ def main() -> int:
     if gallo_excel is None or not gallo_excel.exists():
         if gallo_pdf is None:
             missing_inputs.append("--gallo-pdf or --gallo-xlsx")
-    if precio_excel is None or not precio_excel.exists():
-        if precio_pdf is None:
-            missing_inputs.append("--precio-pdf or --precio-xlsx")
     if missing_inputs:
         parser.error("Missing required inputs: " + ", ".join(missing_inputs))
 
     print(f"Generating case: {args.case_prefix}")
     print(f"Visual source: {visual_excel.name if visual_excel.exists() else visual_pdf.name}")
     print(f"Gallo source: {gallo_excel.name if gallo_excel.exists() else gallo_pdf.name}")
-    print(f"Precio source: {precio_excel.name if precio_excel.exists() else precio_pdf.name}")
+    print(f"Precio source: {precio_excel.name if precio_excel and precio_excel.exists() else (precio_pdf.name if precio_pdf else 'omitted')}")
 
     if not visual_excel.exists():
         convert_pdf_to_excel(str(visual_pdf), str(visual_excel))
     if not gallo_excel.exists():
         convert_pdf_to_excel(str(gallo_pdf), str(gallo_excel))
-    if not precio_excel.exists():
+    if precio_excel is not None and not precio_excel.exists():
         convert_pdf_to_excel(str(precio_pdf), str(precio_excel))
 
     aux_dir = root / "pdf_converter" / "datalab" / "aux_data"
@@ -81,7 +82,7 @@ def main() -> int:
         str(gallo_excel),
         str(visual_excel),
         str(aux_dir),
-        precio_tenencias_path=str(precio_excel),
+        precio_tenencias_path=str(precio_excel) if precio_excel else None,
     )
     wb_formulas, wb_values = merger.merge(output_mode="both")
     validation_report = validate_workbook(wb_values)
@@ -107,7 +108,8 @@ def main() -> int:
     print("DONE")
     print(visual_excel)
     print(gallo_excel)
-    print(precio_excel)
+    if precio_excel:
+        print(precio_excel)
     print(merge_formulas)
     print(merge_values)
     print(validation_output)

@@ -129,6 +129,27 @@ cases:
       - "Web crash was caused by Gallo page metadata parsed as fake position rows, including `Fecha: 27/05/26` in a numeric path."
       - "After fixes, full generation completes, PDF renders 18 pages, and economic validation has issue_count=0."
 
+  ramsfelder_13988:
+    client: "Ramsfelder Marcela"
+    comitente: "13988"
+    status: under-review
+    handoff: CASE_HANDOFFS/RAMSFELDER_13988.md
+    local_outputs:
+      folder: LOCAL_VERIFY_13988_20260529
+      values: LOCAL_VERIFY_13988_20260529/RAMSFELDER_13988_RECHECK_Resumen_Impositivo_FIXED_values.xlsx
+      formulas: LOCAL_VERIFY_13988_20260529/RAMSFELDER_13988_RECHECK_Resumen_Impositivo_FIXED_formulas.xlsx
+      pdf: LOCAL_VERIFY_13988_20260529/RAMSFELDER_13988_RECHECK_Resumen_Impositivo_FIXED.pdf
+    latest_audit:
+      path: LOCAL_VERIFY_13988_20260529/RAMSFELDER_13988_RECHECK_Resumen_Impositivo_VALIDATION.json
+      target: LOCAL_VERIFY_13988_20260529/RAMSFELDER_13988_RECHECK_Resumen_Impositivo_FIXED_values.xlsx
+      high: 0
+      review: 0
+    findings:
+      - RMS13988-MISSING-PRECIO-NO-SALES-001
+    notes:
+      - "Case has no Precio Tenencias input, but the available reports have zero Boletos/Resultado Ventas rows, so missing initial cost data does not affect the result."
+      - "Final USD rentas total is 6439.22 from one Gallo row and five Visual/Bolsa rows, including two zero-amount amortization rows."
+
   approved_smoke_suite:
     client: "Approved smoke baselines"
     comitente: null
