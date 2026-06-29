@@ -40,3 +40,32 @@ def test_visual_rentas_only_report_is_detected_as_visual():
     assert rentas_usd.rows[1][0] == "BONOS REP. ARG. U$S STEP UP V.09/07/30 - Dolar Cable (exterior)"
     assert rentas_usd.rows[1][1] == "81086"
     assert rentas_usd.rows[1][12] == "3,46"
+
+
+def test_visual_cauciones_preserves_repeated_rows_across_fragments():
+    markdown = textwrap.dedent(
+        r"""
+        REPORTE DE GANANCIAS / Periodo Junio 1 - Diciembre 31, 2025
+        13056 - AGUIAR, JUAN MARTIN
+
+        ### Cauciones tomadoras
+
+        | Concertación | Pla | Liquidación | Operación | # Boleto | Contado | Futuro | Tipo de cambio | Tasa (%) | Interés Bruto | Interés Devenga | Aranceles | Derechos | Costo financiero |
+        |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+        | <b>1 / Pesos</b> | | | | | | | | | | | | | |
+        | 22/8/2025 | 3 | 25/8/2025 | Apertura Tomador Cauci | 103.226 | 100.000,00 | 100.402,74 | 1,00 | 49,00 | 402,74 | 402,74 | 19,97 | 3,64 | (379,13) |
+
+        ### Cauciones tomadoras
+
+        | Concertación | Pla | Liquidación | Operación | # Boleto | Contado | Futuro | Tipo de cambio | Tasa (%) | Interés Bruto | Interés Devenga | Aranceles | Derechos | Costo financiero |
+        |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+        | <b>1 / Pesos</b> | | | | | | | | | | | | | |
+        | 22/8/2025 | 3 | 25/8/2025 | Apertura Tomador Cauci | 103.226 | 100.000,00 | 100.402,74 | 1,00 | 49,00 | 402,74 | 402,74 | 19,97 | 3,64 | (379,13) |
+        """
+    )
+
+    parser = MarkdownTableParser(markdown)
+    tables = parser.parse()
+
+    assert "Cauciones Tomadoras" in tables
+    assert len(tables["Cauciones Tomadoras"].rows) == 2

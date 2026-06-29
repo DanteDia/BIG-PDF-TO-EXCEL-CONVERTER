@@ -945,8 +945,8 @@ class MarkdownTableParser:
             existing = self.tables[section]
             # Add rows (assuming same headers)
             for row in rows:
-                # Skip if row is already present (duplicate from page break)
-                if row not in existing.rows:
+                # Cauciones can legitimately repeat identical rows; do not collapse them.
+                if section.lower().startswith('cauciones') or row not in existing.rows:
                     existing.rows.append(row)
             # Merge metadata
             if metadata:
