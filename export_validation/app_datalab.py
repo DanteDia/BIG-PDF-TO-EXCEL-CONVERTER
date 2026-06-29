@@ -365,7 +365,8 @@ if st.button("🚀 Procesar Reportes", type="primary", use_container_width=True)
                             gallo_path=gallo_temp,
                             visual_path=visual_temp,
                             aux_data_dir=str(aux_data_dir),
-                            precio_tenencias_path=precio_tenencias_temp if 'precio_tenencias' in results else None
+                            precio_tenencias_path=precio_tenencias_temp if 'precio_tenencias' in results else None,
+                            prefer_precio_tenencias_usd_cost_basis=True,
                         )
                         wb_formulas, wb_values = merger.merge(output_mode="both")
                         validation_report = validate_workbook(wb_values)

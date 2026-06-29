@@ -19,8 +19,18 @@ def test_generate_case_outputs_allows_missing_precio_tenencias(tmp_path, monkeyp
     seen = {}
 
     class FakeMerger:
-        def __init__(self, gallo_path, visual_path, aux_data_dir, precio_tenencias_path=None):
+        def __init__(
+            self,
+            gallo_path,
+            visual_path,
+            aux_data_dir,
+            precio_tenencias_path=None,
+            prefer_precio_tenencias_usd_cost_basis=False,
+            precio_tenencias_usd_basis_fallback_codes=None,
+        ):
             seen["precio_tenencias_path"] = precio_tenencias_path
+            seen["prefer_precio_tenencias_usd_cost_basis"] = prefer_precio_tenencias_usd_cost_basis
+            seen["precio_tenencias_usd_basis_fallback_codes"] = precio_tenencias_usd_basis_fallback_codes
 
         def merge(self, output_mode="both"):
             return Workbook(), Workbook()
@@ -51,5 +61,7 @@ def test_generate_case_outputs_allows_missing_precio_tenencias(tmp_path, monkeyp
 
     assert generate_case_outputs.main() == 0
     assert seen["precio_tenencias_path"] is None
+    assert seen["prefer_precio_tenencias_usd_cost_basis"] is True
+    assert seen["precio_tenencias_usd_basis_fallback_codes"] == []
     assert (tmp_path / "nested" / "CASE_NO_PRECIO_Resumen_Impositivo_FIXED_values.xlsx").exists()
     assert (tmp_path / "nested" / "CASE_NO_PRECIO_Resumen_Impositivo_VALIDATION.json").exists()

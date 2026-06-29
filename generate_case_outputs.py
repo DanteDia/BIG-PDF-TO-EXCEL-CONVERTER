@@ -27,6 +27,22 @@ def main() -> int:
     parser.add_argument("--year", type=int, default=2025)
     parser.add_argument("--period-start", default="Enero 1")
     parser.add_argument("--period-end", default="Diciembre 31")
+    parser.add_argument(
+        "--prefer-precio-tenencias-usd-basis",
+        action="store_true",
+        help="Backwards-compatible no-op: Precio Tenencias USD fixed-income basis is enabled by default.",
+    )
+    parser.add_argument(
+        "--auto-fallback-usd-basis-on-validation",
+        action="store_true",
+        help="Backwards-compatible no-op: USD basis fallback on validation is enabled by default.",
+    )
+    parser.add_argument(
+        "--precio-tenencias-usd-basis-fallback-code",
+        action="append",
+        default=[],
+        help="Code that should use Gallo position USD even when --prefer-precio-tenencias-usd-basis is enabled.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -83,9 +99,12 @@ def main() -> int:
         str(visual_excel),
         str(aux_dir),
         precio_tenencias_path=str(precio_excel) if precio_excel else None,
+        prefer_precio_tenencias_usd_cost_basis=True,
+        precio_tenencias_usd_basis_fallback_codes=list(args.precio_tenencias_usd_basis_fallback_code),
     )
     wb_formulas, wb_values = merger.merge(output_mode="both")
     validation_report = validate_workbook(wb_values)
+
     add_validation_sheet(wb_values, validation_report)
     wb_formulas.save(merge_formulas)
     wb_values.save(merge_values)

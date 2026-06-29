@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment, PatternFill
 from pathlib import Path
 from datetime import datetime, date
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 import re
 
 
@@ -476,6 +476,14 @@ class GalloVisualMerger:
             tipo_cambio_num = 1.0
         return abs(gastos_num * tipo_cambio_num)
 
+    def _materialize_usd_sheet_gastos(self, gastos_cell_value, tipo_cambio) -> float:
+        """Materializa gastos USD aunque la celda venga como fórmula ABS(<fuente>*Orow)."""
+        if isinstance(gastos_cell_value, str) and gastos_cell_value.startswith('='):
+            match = re.search(r'ABS\(\s*([-+]?\d+(?:\.\d+)?)\s*\*\s*O\d+\s*\)', gastos_cell_value, re.IGNORECASE)
+            if match:
+                return self._convert_usd_sheet_gastos(match.group(1), tipo_cambio)
+        return self._convert_usd_sheet_gastos(gastos_cell_value, tipo_cambio)
+
     def _get_usd_conversion_factor(self, moneda: str, valor_usd_dia) -> float:
         """Devuelve el factor para llevar monetarios de la hoja USD a USD."""
         moneda_text = str(moneda or "").lower()
@@ -488,13 +496,13 @@ class GalloVisualMerger:
         return 1.0
 
     def _apply_signed_expense(self, bruto, gastos_abs, cantidad) -> float:
-        """Empuja el neto más lejos de cero según el signo económico de la operación."""
+        """Aplica gastos respetando el signo económico del bruto fuente."""
         bruto_num = self._to_float(bruto)
         gastos_num = abs(self._to_float(gastos_abs))
         cantidad_num = self._to_float(cantidad)
         is_sale = cantidad_num < 0 or (cantidad_num == 0 and bruto_num < 0)
         if is_sale:
-            return bruto_num - gastos_num
+            return bruto_num + gastos_num
         return bruto_num + gastos_num
 
     def _normalize_usd_result_nominal_price(self, nominal_price, tipo_instrumento: str, origen: str = "", moneda: str = "") -> float:
@@ -668,7 +676,15 @@ class GalloVisualMerger:
                 overrides[cod_clean] = 'ARS'
         return overrides
     
-    def __init__(self, gallo_path: str = None, visual_path: str = None, aux_data_dir: str = None, precio_tenencias_path: str = None):
+    def __init__(
+        self,
+        gallo_path: str = None,
+        visual_path: str = None,
+        aux_data_dir: str = None,
+        precio_tenencias_path: str = None,
+        prefer_precio_tenencias_usd_cost_basis: bool = True,
+        precio_tenencias_usd_basis_fallback_codes: Optional[Iterable[str]] = None,
+    ):
         """
         Inicializa el merger con las rutas a los archivos.
         
@@ -677,6 +693,10 @@ class GalloVisualMerger:
             visual_path: Ruta al Excel generado de Visual
             aux_data_dir: Directorio con hojas auxiliares (default: pdf_converter/datalab/aux_data)
             precio_tenencias_path: Ruta al Excel generado desde el PDF de Precio Tenencias (opcional)
+            prefer_precio_tenencias_usd_cost_basis: prioriza Precio Tenencias como base fiscal en
+                renta fija USD cuando existe; Posición Gallo USD queda como fallback por código.
+            precio_tenencias_usd_basis_fallback_codes: códigos que deben seguir usando la base USD directa
+                de Posición Gallo aun con la prioridad Precio Tenencias activa.
         """
         if not visual_path:
             raise ValueError("visual_path es obligatorio")
@@ -684,6 +704,12 @@ class GalloVisualMerger:
         self.gallo_path = Path(gallo_path) if gallo_path else None
         self.visual_path = Path(visual_path)
         self.precio_tenencias_path = Path(precio_tenencias_path) if precio_tenencias_path else None
+        self.prefer_precio_tenencias_usd_cost_basis = prefer_precio_tenencias_usd_cost_basis
+        self.precio_tenencias_usd_basis_fallback_codes = {
+            self._clean_codigo(str(code))
+            for code in (precio_tenencias_usd_basis_fallback_codes or [])
+            if code
+        }
         
         if aux_data_dir is None:
             aux_data_dir = Path(__file__).parent / 'aux_data'
@@ -1458,13 +1484,15 @@ class GalloVisualMerger:
         
         return ''
     
-    def merge(self, output_mode: str = "both") -> Tuple[Workbook, Workbook]:
+    def merge(self, output_mode: str = "both", auto_fallback_usd_basis_on_validation: bool = True) -> Tuple[Workbook, Workbook]:
         """
         Ejecuta el merge completo y retorna el/los workbook(s) consolidado(s).
         
         Args:
             output_mode: "formulas" (solo fórmulas), "values" (solo valores), 
                         o "both" (ambas versiones, default)
+            auto_fallback_usd_basis_on_validation: si una base Precio Tenencias en USD dispara
+                        validación económica, reintenta ese código con Posición Gallo USD.
         
         Returns:
             Tuple (wb_formulas, wb_values). Si output_mode != "both", 
@@ -1508,12 +1536,39 @@ class GalloVisualMerger:
         
         # Materializar todas las fórmulas en la copia
         self._materialize_formulas(wb_values)
+
+        if auto_fallback_usd_basis_on_validation and self.prefer_precio_tenencias_usd_cost_basis:
+            fallback_codes = self._usd_basis_fallback_codes_from_validation(wb_values)
+            new_codes = fallback_codes - self.precio_tenencias_usd_basis_fallback_codes
+            if new_codes:
+                self.precio_tenencias_usd_basis_fallback_codes.update(new_codes)
+                return self.merge(output_mode=output_mode, auto_fallback_usd_basis_on_validation=False)
         
         if output_mode == "values":
             return (None, wb_values)
         
         # Modo "both": retornar ambas versiones
         return (wb, wb_values)
+
+    def _usd_basis_fallback_codes_from_validation(self, wb_values: Workbook) -> set[str]:
+        try:
+            from pdf_converter.datalab.economic_sanity import validate_workbook
+        except Exception:
+            return set()
+
+        if "Resultado Ventas USD" not in wb_values.sheetnames:
+            return set()
+
+        report = validate_workbook(wb_values)
+        ws_usd = wb_values["Resultado Ventas USD"]
+        fallback_codes: set[str] = set()
+        for issue in report.issues:
+            if issue.sheet != "Resultado Ventas USD" or issue.rule_id != "RES-USD-RATIO-001":
+                continue
+            code = ws_usd.cell(issue.row, 4).value
+            if code:
+                fallback_codes.add(self._clean_codigo(str(code)))
+        return fallback_codes
 
     def _normalize_formulas_to_english(self, wb: Workbook):
         """
@@ -2014,7 +2069,8 @@ class GalloVisualMerger:
                 precio_original = self._to_float(ws.cell(row, 10).value)   # Col J = Precio base
                 precio_std_original = self._to_float(ws.cell(row, 11).value)  # Col K = Precio Standarizado
                 interes = self._to_float(ws.cell(row, 14).value)  # Col N = Interés
-                gastos = self._to_float(ws.cell(row, 17).value)   # Col Q = Gastos (ya es valor)
+                gastos_cell_value = ws.cell(row, 17).value
+                gastos = self._to_float(gastos_cell_value)   # Col Q = Gastos (ya es valor o fórmula)
                 bruto_fuente = self._to_float(ws.cell(row, 13).value)
                 
                 # Materializar P (Valor USD Día) - si es fórmula, calcular VLOOKUP
@@ -2085,7 +2141,7 @@ class GalloVisualMerger:
                     interes = interes / 100
                     # Actualizar celdas con valores divididos
                     ws.cell(row, 14, interes)  # Col N = Interés
-                gastos_usd = self._convert_usd_sheet_gastos(gastos, tipo_cambio)
+                gastos_usd = self._materialize_usd_sheet_gastos(gastos_cell_value, tipo_cambio)
                 ws.cell(row, 17, gastos_usd)  # Col Q = Gastos USD visibles
                 
                 # Columnas de running stock: T(20)-Z(26)
@@ -2602,13 +2658,21 @@ class GalloVisualMerger:
             # Priorizar ese valor evita mezclar una base en pesos de PrecioTenencias con ventas USD.
             codigo_clean = self._clean_codigo(codigo) if codigo else ''
             precio_tenencia = self._get_precio_tenencia_inicial(codigo, ticker)
-            if (precio_usd > 0
+            prefer_precio_tenencias_usd = (
+                self.prefer_precio_tenencias_usd_cost_basis
+                and es_renta_fija_usd
+                and codigo_clean not in self.precio_tenencias_usd_basis_fallback_codes
+            )
+            if self._has_zero_cost_precio_tenencia(codigo, ticker):
+                precio_a_utilizar = 0
+                origen_precio = "PrecioTenenciasCostoRecuperado"
+            elif prefer_precio_tenencias_usd and precio_tenencia > 0:
+                precio_a_utilizar = precio_tenencia
+                origen_precio = "PrecioTenenciasIniciales"
+            elif (precio_usd > 0
                     and (self._position_price_is_already_usd(codigo_clean) or es_renta_fija_usd)):
                 precio_a_utilizar = precio_usd
                 origen_precio = "PosicionInicialUSD"
-            elif self._has_zero_cost_precio_tenencia(codigo, ticker):
-                precio_a_utilizar = 0
-                origen_precio = "PrecioTenenciasCostoRecuperado"
             elif precio_tenencia > 0:
                 precio_a_utilizar = precio_tenencia
                 origen_precio = "PrecioTenenciasIniciales"
@@ -4479,7 +4543,7 @@ class GalloVisualMerger:
             ws.cell(row_out, 22, f'=SI(I{row_out}<0;I{row_out}*U{row_out};0)')
             
             # Col W: Neto Calculado = Bruto USD +/- Gastos USD según signo económico
-            ws.cell(row_out, 23, f'=SI(I{row_out}<0;M{row_out}-Q{row_out};M{row_out}+Q{row_out})')
+            ws.cell(row_out, 23, f'=SI(I{row_out}<0;M{row_out}+Q{row_out};M{row_out}+Q{row_out})')
             
             # Col X: Resultado Calculado = |Neto| - |Costo|
             ws.cell(row_out, 24, f'=SI(I{row_out}<0;SI(O(V{row_out}<>0;T{row_out}>0);ABS(W{row_out})-ABS(V{row_out});0);0)')

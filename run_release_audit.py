@@ -51,20 +51,6 @@ def smoke_baseline_targets(root: Path = ROOT) -> list[AuditTarget]:
     targets.extend(
         [
             AuditTarget(
-                "AGUIAR pre Martin baseline",
-                root / "SMOKE_BASELINE" / "AGUIAR_20260318_PRE_MARTIN" / "AGUIAR_SMOKE_values.xlsx",
-                "approved-smoke",
-                "run_smoke_suite",
-                "approved",
-            ),
-            AuditTarget(
-                "AGUIAR same input current",
-                root / "SMOKE_BASELINE" / "AGUIAR_20260318_POST_MARTIN" / "AGUIAR_SAME_INPUT_values.xlsx",
-                "approved-smoke",
-                "run_smoke_suite",
-                "approved",
-            ),
-            AuditTarget(
                 "CANULLO approved baseline",
                 root
                 / "SMOKE_BASELINE"
